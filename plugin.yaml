@@ -1,0 +1,27 @@
+name: sigil
+version: "0.1.0"
+description: "Grafana AI Observability for Hermes — records LLM calls and tool usage as Sigil generations and OTel traces+metrics."
+author: Alexander Akhmetov
+requires_env:
+  - name: HERMES_SIGIL_ENDPOINT
+    description: "Sigil generations API URL, e.g. https://<region>.grafana.net/api/v1/generations:export"
+  - name: HERMES_SIGIL_INSTANCE_ID
+    description: "Sigil instance ID (basic-auth user)"
+  - name: HERMES_SIGIL_API_KEY
+    description: "Sigil API token with sigil:write scope"
+    secret: true
+  - name: HERMES_SIGIL_OTLP_ENDPOINT
+    description: "Grafana Cloud OTLP gateway base URL, e.g. https://otlp-gateway-prod-<region>.grafana.net/otlp"
+  - name: HERMES_SIGIL_OTLP_INSTANCE_ID
+    description: "Grafana Cloud OTLP basic-auth user (instance ID from the stack details page)"
+  - name: HERMES_SIGIL_OTLP_TOKEN
+    description: "Grafana Cloud OTLP write token"
+    secret: true
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_api_request
+  - post_api_request
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-plugin-sigil"
+version = "0.1.0"
+description = "Grafana AI Observability plugin for Hermes Agent — records LLM calls and tool executions as Sigil generations and OTel traces+metrics."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Alexander Akhmetov" }]
+requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+  "sigil-sdk>=0.1.5",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+sigil = "hermes_plugin_sigil"
+
+[project.urls]
+Homepage = "https://github.com/alexander-akhmetov/sigil-hermes"
+Repository = "https://github.com/alexander-akhmetov/sigil-hermes"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_plugin_sigil"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/hermes_plugin_sigil",
+  "plugin.yaml",
+  "README.md",
+  "LICENSE",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

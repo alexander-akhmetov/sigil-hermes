@@ -1,0 +1,104 @@
+"""In-flight recorder state.
+
+Generations are keyed by ``(task_id, session_id, api_call_count)`` so we can
+correlate the matching pre/post hook pair. Tool executions are keyed by
+``(task_id, session_id, tool_call_id)``.
+
+Generation state carries the parsed input messages alongside the recorder —
+hermes's ``post_api_request`` hook does not reliably pass ``messages`` again
+(matching the bundled langfuse plugin), so we capture them once at pre-time
+and pass them back to ``set_result`` at post-time. Otherwise the SDK's
+``set_result(input=[], output=...)`` would clear the input we seeded.
+"""
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(slots=True)
+class GenState:
+    recorder: Any
+    input_messages: list = field(default_factory=list)
+    system_prompt: str = ""
+    # Partial fields filled in by post_api_request — actual ``set_result`` is
+    # deferred until post_llm_call so we can pair each call with its assistant
+    # message from the final ``conversation_history``.
+    usage: Any = None
+    finish_reason: str = ""
+    response_model: str = ""
+
+
+_GEN_STATE: dict[tuple[str, str, int], GenState] = {}
+_TOOL_STATE: dict[tuple[str, str, str], Any] = {}
+# Per-(task_id, session_id) running hermes-shaped message list. Populated by
+# ``pre_llm_call`` from ``conversation_history`` and extended in-place as
+# ``post_api_request`` and ``post_tool_call`` fire — so each
+# ``pre_api_request`` snapshot reflects the messages going into THIS request,
+# not the start-of-turn snapshot.
+_CONVO_STATE: dict[tuple[str, str], list[dict]] = {}
+_LOCK = threading.Lock()
+
+
+def gen_put(key: tuple[str, str, int], state: GenState) -> None:
+    with _LOCK:
+        _GEN_STATE[key] = state
+
+
+def gen_get(key: tuple[str, str, int]) -> GenState | None:
+    with _LOCK:
+        return _GEN_STATE.get(key)
+
+
+def gen_pop(key: tuple[str, str, int]) -> GenState | None:
+    with _LOCK:
+        return _GEN_STATE.pop(key, None)
+
+
+def gen_pop_session(session_id: str) -> list[tuple[tuple[str, str, int], GenState]]:
+    """Pop and return all GenStates for a session, sorted by api_call_count."""
+    with _LOCK:
+        matching = [(k, v) for k, v in _GEN_STATE.items() if k[1] == session_id]
+        for k, _ in matching:
+            del _GEN_STATE[k]
+    matching.sort(key=lambda kv: kv[0][2])
+    return matching
+
+
+def tool_put(key: tuple[str, str, str], recorder: Any) -> None:
+    with _LOCK:
+        _TOOL_STATE[key] = recorder
+
+
+def tool_pop(key: tuple[str, str, str]) -> Any:
+    with _LOCK:
+        return _TOOL_STATE.pop(key, None)
+
+
+def convo_set(key: tuple[str, str], messages: list[dict]) -> None:
+    with _LOCK:
+        _CONVO_STATE[key] = list(messages)
+
+
+def convo_get(key: tuple[str, str]) -> list[dict]:
+    with _LOCK:
+        return list(_CONVO_STATE.get(key) or [])
+
+
+def convo_append(key: tuple[str, str], message: dict) -> None:
+    with _LOCK:
+        if key in _CONVO_STATE:
+            _CONVO_STATE[key].append(message)
+
+
+def convo_clear(key: tuple[str, str]) -> None:
+    with _LOCK:
+        _CONVO_STATE.pop(key, None)
+
+
+def reset_for_tests() -> None:
+    with _LOCK:
+        _GEN_STATE.clear()
+        _TOOL_STATE.clear()
+        _CONVO_STATE.clear()
