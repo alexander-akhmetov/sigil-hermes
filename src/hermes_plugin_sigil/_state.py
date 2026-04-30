@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -28,6 +29,12 @@ class GenState:
     usage: Any = None
     finish_reason: str = ""
     response_model: str = ""
+    # Captured at pre_api_request and post_api_request so the generation span
+    # and gen_ai.client.operation.duration metric reflect the LLM call alone,
+    # not the close-deferred recorder lifetime that runs through tool execution
+    # and any subsequent calls in the same turn.
+    started_at: datetime | None = None
+    api_duration: float | None = None
 
 
 _GEN_STATE: dict[tuple[str, str, int], GenState] = {}

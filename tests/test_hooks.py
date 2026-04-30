@@ -419,6 +419,53 @@ def test_post_llm_call_assigns_outputs_to_pending_recorders(patch_client) -> Non
     assert any(p.kind == PartKind.TEXT and "found 3 results" in p.text for p in final2["output"][0].parts)
 
 
+def test_completed_at_uses_api_duration_not_recorder_close_time(patch_client) -> None:
+    """Span end + duration metric must reflect the LLM call, not the close time.
+
+    If we used wallclock at close, the first call in a tool loop would report
+    a span/histogram covering the full turn (LLM + tool + later calls).
+    """
+    _hooks.on_pre_api_request(
+        task_id="t1", session_id="s1", model="m", provider="p",
+        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+    )
+    rec = patch_client._next_gen_recorder
+    state = _state.gen_get(("t1", "s1", 1))
+    assert state is not None and state.started_at is not None
+    started_at = state.started_at
+
+    _hooks.on_post_api_request(
+        task_id="t1", session_id="s1", api_call_count=1, model="m",
+        usage={}, finish_reason="stop", api_duration=2.5,
+    )
+    _hooks.on_post_llm_call(task_id="t1", session_id="s1", conversation_history=[])
+
+    final = rec.set_result_calls[-1]
+    assert final["started_at"] == started_at
+    completed_at = final["completed_at"]
+    assert completed_at is not None
+    delta = (completed_at - started_at).total_seconds()
+    assert delta == pytest.approx(2.5)
+
+
+def test_completed_at_is_none_when_api_duration_missing(patch_client) -> None:
+    """No api_duration → leave completed_at unset; SDK falls back to its clock."""
+    _hooks.on_pre_api_request(
+        task_id="t1", session_id="s1", model="m", provider="p",
+        messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+    )
+    rec = patch_client._next_gen_recorder
+    _hooks.on_post_api_request(
+        task_id="t1", session_id="s1", api_call_count=1, model="m",
+        usage={}, finish_reason="stop",
+        # no api_duration kwarg
+    )
+    _hooks.on_post_llm_call(task_id="t1", session_id="s1", conversation_history=[])
+
+    final = rec.set_result_calls[-1]
+    assert final["completed_at"] is None
+
+
 def test_session_end_closes_pending_recorders_on_interrupt(patch_client) -> None:
     """If post_llm_call never fires (interrupt), on_session_end must still close recorders."""
     _hooks.on_pre_api_request(

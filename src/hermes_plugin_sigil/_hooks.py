@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import _client, _redact, _state
@@ -301,11 +302,16 @@ def on_pre_api_request(
         system_prompt, non_system = _split_system_prompt(messages)
         sigil_messages = _messages_to_sigil(non_system)
 
+        # Stamp started_at on both seed and GenState. The seed timestamp is
+        # what the SDK uses for the span's start_time; GenState carries it so
+        # the close path can compute completed_at = started_at + api_duration.
+        started_at = datetime.now(UTC)
         start = GenerationStart(
             model=ModelRef(provider=provider or "unknown", name=model or "unknown"),
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
             system_prompt=system_prompt,
+            started_at=started_at,
             tags={
                 "sigil.framework.name": "hermes",
                 "sigil.framework.source": "plugin",
@@ -323,7 +329,12 @@ def on_pre_api_request(
         # close-time — no need to call set_result twice.
         _state.gen_put(
             (task_id, session_id, int(api_call_count or 0)),
-            _state.GenState(recorder=recorder, input_messages=sigil_messages, system_prompt=system_prompt),
+            _state.GenState(
+                recorder=recorder,
+                input_messages=sigil_messages,
+                system_prompt=system_prompt,
+                started_at=started_at,
+            ),
         )
     except Exception as exc:
         logger.warning("hermes-plugin-sigil: on_pre_api_request failed: %s", exc)
@@ -356,6 +367,7 @@ def on_post_api_request(
     finish_reason: str = "",
     messages: Any = None,
     response_model: str = "",
+    api_duration: float | None = None,
     **_: Any,
 ) -> None:
     """Save partial result data on the GenState — recorder stays open.
@@ -373,6 +385,8 @@ def on_post_api_request(
     state.usage = usage
     state.finish_reason = finish_reason or ""
     state.response_model = response_model or model or ""
+    if isinstance(api_duration, (int, float)) and api_duration >= 0:
+        state.api_duration = float(api_duration)
 
     # Older hermes branches do pass assistant_message — extend convo when
     # available so the next pre_api_request input chain is correct without
@@ -415,12 +429,22 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
         try:
             sigil_output = _assistant_message_to_sigil(asst) if asst is not None else []
             token_usage = _build_token_usage(gen_state.usage)
+            # Pin completed_at to started_at + api_duration when we have it.
+            # The recorder is closed at post_llm_call time, which can be much
+            # later than the LLM call itself (after tool execution + further
+            # API calls in the same turn). Without this, the SDK's span end
+            # and operation.duration histogram would cover the whole turn.
+            completed_at: datetime | None = None
+            if gen_state.started_at is not None and gen_state.api_duration is not None:
+                completed_at = gen_state.started_at + timedelta(seconds=gen_state.api_duration)
             recorder.set_result(
                 input=gen_state.input_messages,
                 output=sigil_output,
                 usage=token_usage,
                 stop_reason=gen_state.finish_reason,
                 response_model=gen_state.response_model,
+                started_at=gen_state.started_at,
+                completed_at=completed_at,
             )
         except Exception as exc:
             logger.warning("hermes-plugin-sigil: close-pending set_result failed: %s", exc)
