@@ -49,10 +49,10 @@ def test_pre_api_request_calls_start_generation_with_expected_fields(patch_clien
     rec = patch_client._next_gen_recorder
     assert rec.entered
     assert not rec.exited
-    # Recorder is seeded with input messages on pre-hook
-    assert any("input" in call for call in rec.set_result_calls)
-    seeded_input = next(call for call in rec.set_result_calls if "input" in call)["input"]
-    assert any(m.role == MessageRole.USER for m in seeded_input)
+    # Input is stored on GenState; threaded into set_result at close-time.
+    state = _state.gen_get(("t1", "s1", 1))
+    assert state is not None
+    assert any(m.role == MessageRole.USER for m in state.input_messages)
 
 
 def test_pre_post_api_request_round_trip(patch_client) -> None:
@@ -362,9 +362,10 @@ def test_pre_llm_call_seeds_input_for_pre_api_request(patch_client) -> None:
 
     rec = patch_client._next_gen_recorder
     assert rec is not None
-    seeded = next(call for call in rec.set_result_calls if "input" in call)["input"]
-    assert len(seeded) == 1
-    assert seeded[0].role == MessageRole.USER
+    state = _state.gen_get(("t1", "s1", 1))
+    assert state is not None
+    assert len(state.input_messages) == 1
+    assert state.input_messages[0].role == MessageRole.USER
 
 
 def test_post_llm_call_assigns_outputs_to_pending_recorders(patch_client) -> None:
@@ -472,8 +473,10 @@ def test_running_convo_includes_assistant_and_tool_results(patch_client) -> None
         task_id="t1", session_id="s1", model="m", provider="p", api_call_count=2,
     )
     rec2 = patch_client._next_gen_recorder
-    seeded2 = next(call for call in rec2.set_result_calls if "input" in call)["input"]
-    roles = [m.role for m in seeded2]
+    assert rec2 is not None
+    state2 = _state.gen_get(("t1", "s1", 2))
+    assert state2 is not None
+    roles = [m.role for m in state2.input_messages]
     assert MessageRole.USER in roles
     assert MessageRole.ASSISTANT in roles
     assert MessageRole.TOOL in roles

@@ -319,11 +319,8 @@ def on_pre_api_request(
         )
         recorder = client.start_generation(start)
         recorder.__enter__()
-        # Seed the recorder with the input so post-hook only needs to fill output/usage.
-        try:
-            recorder.set_result(input=sigil_messages)
-        except Exception as exc:
-            logger.warning("hermes-plugin-sigil: set_result(input=...) failed: %s", exc)
+        # Input is stashed on GenState and threaded into set_result at
+        # close-time — no need to call set_result twice.
         _state.gen_put(
             (task_id, session_id, int(api_call_count or 0)),
             _state.GenState(recorder=recorder, input_messages=sigil_messages, system_prompt=system_prompt),
