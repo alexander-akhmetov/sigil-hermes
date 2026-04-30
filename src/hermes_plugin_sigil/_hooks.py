@@ -411,24 +411,26 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
     for idx, ((_, _, _api_call_count), gen_state) in enumerate(pending):
         recorder = gen_state.recorder
         asst = relevant_asst[idx] if idx < len(relevant_asst) else None
+        # Catch around the whole prep + set_result path: a malformed assistant
+        # message or usage dict would otherwise abort the loop midway, leaving
+        # later recorders open and skipping the caller's downstream
+        # convo_clear / client.flush.
         try:
             sigil_output = _assistant_message_to_sigil(asst) if asst is not None else []
             token_usage = _build_token_usage(gen_state.usage)
-            try:
-                recorder.set_result(
-                    input=gen_state.input_messages,
-                    output=sigil_output,
-                    usage=token_usage,
-                    stop_reason=gen_state.finish_reason,
-                    response_model=gen_state.response_model,
-                )
-            except Exception as exc:
-                logger.warning("hermes-plugin-sigil: set_result failed: %s", exc)
-        finally:
-            try:
-                recorder.__exit__(None, None, None)
-            except Exception as exc:
-                logger.warning("hermes-plugin-sigil: recorder __exit__ failed: %s", exc)
+            recorder.set_result(
+                input=gen_state.input_messages,
+                output=sigil_output,
+                usage=token_usage,
+                stop_reason=gen_state.finish_reason,
+                response_model=gen_state.response_model,
+            )
+        except Exception as exc:
+            logger.warning("hermes-plugin-sigil: close-pending set_result failed: %s", exc)
+        try:
+            recorder.__exit__(None, None, None)
+        except Exception as exc:
+            logger.warning("hermes-plugin-sigil: recorder __exit__ failed: %s", exc)
 
 
 def on_pre_tool_call(
