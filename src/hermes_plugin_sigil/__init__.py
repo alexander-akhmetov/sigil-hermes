@@ -1,9 +1,9 @@
 """hermes-plugin-sigil — Grafana AI Observability plugin for Hermes Agent.
 
 Records every LLM API call (`pre_api_request`/`post_api_request`) as a Sigil
-generation and every tool invocation (`pre_tool_call`/`post_tool_call`) as a
-Sigil tool execution. On `on_session_end`, flushes the SDK's HTTP exporter
-and any OTel providers the plugin installed.
+generation and every tool invocation (`post_tool_call`) as a Sigil tool
+execution. On `on_session_end`, flushes the SDK's HTTP exporter and any OTel
+providers the plugin installed.
 
 Two independent channels — see README:
   - Generations:  HERMES_SIGIL_ENDPOINT / _INSTANCE_ID / _API_KEY
@@ -21,7 +21,6 @@ from ._hooks import (
     on_post_tool_call,
     on_pre_api_request,
     on_pre_llm_call,
-    on_pre_tool_call,
     on_session_end,
 )
 
@@ -31,11 +30,16 @@ def register(ctx) -> None:
     # pre_llm_call / post_llm_call are turn-scoped — they bracket the running
     # conversation history that we use as input for each request-scoped
     # pre_api_request (which does not receive ``messages`` from hermes).
+    #
+    # We deliberately do not register pre_tool_call. Current hermes invokes
+    # it from run_agent.py:9060/9520 without session_id / tool_call_id (they
+    # default to "" in get_pre_tool_call_block_message), so any state we
+    # stored under a pre-time key would never match the post_tool_call key.
+    # Doing all tool work in post_tool_call sidesteps the mismatch.
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
-    ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("on_session_end", on_session_end)
 
@@ -46,7 +50,6 @@ __all__ = [
     "on_post_llm_call",
     "on_pre_api_request",
     "on_post_api_request",
-    "on_pre_tool_call",
     "on_post_tool_call",
     "on_session_end",
 ]

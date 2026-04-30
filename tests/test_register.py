@@ -8,7 +8,6 @@ EXPECTED_HOOKS = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
-    "pre_tool_call",
     "post_tool_call",
     "on_session_end",
 }

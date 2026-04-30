@@ -1,14 +1,16 @@
 """In-flight recorder state.
 
 Generations are keyed by ``(task_id, session_id, api_call_count)`` so we can
-correlate the matching pre/post hook pair. Tool executions are keyed by
-``(task_id, session_id, tool_call_id)``.
+correlate the matching pre/post hook pair.
 
 Generation state carries the parsed input messages alongside the recorder —
 hermes's ``post_api_request`` hook does not reliably pass ``messages`` again
 (matching the bundled langfuse plugin), so we capture them once at pre-time
 and pass them back to ``set_result`` at post-time. Otherwise the SDK's
 ``set_result(input=[], output=...)`` would clear the input we seeded.
+
+Tool executions don't need cross-hook state — we only register
+``post_tool_call``, do all the work there, and close immediately.
 """
 from __future__ import annotations
 
@@ -38,7 +40,6 @@ class GenState:
 
 
 _GEN_STATE: dict[tuple[str, str, int], GenState] = {}
-_TOOL_STATE: dict[tuple[str, str, str], Any] = {}
 # Per-(task_id, session_id) running hermes-shaped message list. Populated by
 # ``pre_llm_call`` from ``conversation_history`` and extended in-place as
 # ``post_api_request`` and ``post_tool_call`` fire — so each
@@ -73,16 +74,6 @@ def gen_pop_session(session_id: str) -> list[tuple[tuple[str, str, int], GenStat
     return matching
 
 
-def tool_put(key: tuple[str, str, str], recorder: Any) -> None:
-    with _LOCK:
-        _TOOL_STATE[key] = recorder
-
-
-def tool_pop(key: tuple[str, str, str]) -> Any:
-    with _LOCK:
-        return _TOOL_STATE.pop(key, None)
-
-
 def convo_set(key: tuple[str, str], messages: list[dict]) -> None:
     with _LOCK:
         _CONVO_STATE[key] = list(messages)
@@ -107,5 +98,4 @@ def convo_clear(key: tuple[str, str]) -> None:
 def reset_for_tests() -> None:
     with _LOCK:
         _GEN_STATE.clear()
-        _TOOL_STATE.clear()
         _CONVO_STATE.clear()

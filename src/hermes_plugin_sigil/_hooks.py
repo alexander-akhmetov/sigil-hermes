@@ -37,9 +37,10 @@ def _convo_key(task_id: str, session_id: str) -> tuple[str, str]:
 def _should_sample() -> bool:
     """Return True if this trace should be recorded under HERMES_SIGIL_SAMPLE_RATE.
 
-    A pre-hook that returns False simply skips ``start_generation`` /
-    ``start_tool_execution`` and never stores a recorder, so the matching
-    post-hook becomes a natural no-op (``gen_pop`` / ``tool_pop`` returns None).
+    A pre-hook that returns False simply skips ``start_generation`` and
+    never stores a recorder, so the matching post-hook becomes a natural
+    no-op (``gen_pop`` returns None). Tool sampling is checked at
+    ``post_tool_call`` time directly.
     """
     cfg = _client._get_plugin_config()
     if cfg is None or cfg.sample_rate >= 1.0:
@@ -340,32 +341,14 @@ def on_pre_api_request(
         logger.warning("hermes-plugin-sigil: on_pre_api_request failed: %s", exc)
 
 
-def _assistant_message_to_dict(assistant_message: Any) -> dict | None:
-    """Coerce a hermes assistant_message (dict or object) to an OpenAI-shaped dict."""
-    if assistant_message is None:
-        return None
-    if isinstance(assistant_message, dict):
-        content = assistant_message.get("content")
-        tool_calls = assistant_message.get("tool_calls") or []
-    else:
-        content = getattr(assistant_message, "content", None)
-        tool_calls = getattr(assistant_message, "tool_calls", None) or []
-    out: dict = {"role": "assistant", "content": content}
-    if tool_calls:
-        out["tool_calls"] = list(tool_calls) if isinstance(tool_calls, list) else tool_calls
-    return out
-
-
 def on_post_api_request(
     *,
     task_id: str = "",
     session_id: str = "",
     api_call_count: int = 0,
     model: str = "",
-    assistant_message: Any = None,
     usage: Any = None,
     finish_reason: str = "",
-    messages: Any = None,
     response_model: str = "",
     api_duration: float | None = None,
     **_: Any,
@@ -377,7 +360,10 @@ def on_post_api_request(
     ``run_agent.py:12526``). The actual content of each call's assistant
     response is only available later via ``post_llm_call``'s
     ``conversation_history``. We defer ``set_result`` and recorder close
-    until then.
+    until then. The assistant tool-call message that bridges this call to
+    the next pre_api_request input chain is synthesized in post_tool_call,
+    which is the only hook that reliably carries tool_name/args/tool_call_id
+    on current hermes.
     """
     state = _state.gen_get((task_id, session_id, int(api_call_count or 0)))
     if state is None:
@@ -387,13 +373,6 @@ def on_post_api_request(
     state.response_model = response_model or model or ""
     if isinstance(api_duration, (int, float)) and api_duration >= 0:
         state.api_duration = float(api_duration)
-
-    # Older hermes branches do pass assistant_message — extend convo when
-    # available so the next pre_api_request input chain is correct without
-    # waiting for post_llm_call.
-    asst_dict = _assistant_message_to_dict(assistant_message)
-    if asst_dict is not None:
-        _state.convo_append(_convo_key(task_id, session_id), asst_dict)
 
 
 def _close_pending_for_session(session_id: str, conversation_history: Any) -> None:
@@ -454,27 +433,40 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
             logger.warning("hermes-plugin-sigil: recorder __exit__ failed: %s", exc)
 
 
-def on_pre_tool_call(
+def on_post_tool_call(
     *,
     tool_name: str = "",
     args: Any = None,
+    result: Any = None,
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    duration_ms: int | None = None,
     **_: Any,
 ) -> None:
-    # Synthesize the assistant message that triggered this tool call. Hermes
-    # does not pass ``assistant_message`` (or its ``tool_calls``) to
-    # ``post_api_request``, so the running convo would otherwise jump from a
-    # user message straight to a tool result. ``pre_tool_call`` is the only
-    # hook that gives us tool_name/args/tool_call_id together.
+    """Record the tool execution and extend the running convo for the next call.
+
+    All work is done here, not split with pre_tool_call. Current hermes invokes
+    pre_tool_call from ``run_agent.py:9060`` and ``run_agent.py:9520`` without
+    ``session_id`` / ``tool_call_id`` (they default to ``""`` in
+    ``get_pre_tool_call_block_message``), but post_tool_call (``model_tools.py:732``)
+    always carries the real ids. Doing everything in post avoids a key mismatch
+    between the two hooks that would leak recorders and misroute convo state.
+
+    Order: append the synthesized assistant tool-call message, then the tool
+    result, so the next ``pre_api_request``'s input chain reads
+    ``user → assistant(tool_calls) → tool``. Then start, set_result, and close
+    the tool execution recorder, using ``duration_ms`` from hermes to backdate
+    the span's started_at so its duration reflects the tool's wallclock time.
+    """
+    convo_key = _convo_key(task_id, session_id)
     if tool_call_id:
         try:
             args_str = json.dumps(args) if args is not None else "{}"
         except Exception:
             args_str = "{}"
         _state.convo_append(
-            _convo_key(task_id, session_id),
+            convo_key,
             {
                 "role": "assistant",
                 "content": None,
@@ -487,6 +479,14 @@ def on_pre_tool_call(
                 ],
             },
         )
+        try:
+            content = result if isinstance(result, str) else json.dumps(result, default=str)
+        except Exception:
+            content = repr(result)
+        _state.convo_append(
+            convo_key,
+            {"role": "tool", "tool_call_id": tool_call_id, "content": content},
+        )
 
     client = _client._get_client()
     if client is None:
@@ -497,61 +497,40 @@ def on_pre_tool_call(
     try:
         from sigil_sdk import ToolExecutionStart
 
+        completed_at = datetime.now(UTC)
+        if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
+            started_at = completed_at - timedelta(milliseconds=float(duration_ms))
+        else:
+            started_at = completed_at
+
         start = ToolExecutionStart(
             tool_name=tool_name or "",
             tool_call_id=tool_call_id or "",
             conversation_id=session_id or task_id or "",
             agent_name=_agent_name(),
             include_content=True,
+            started_at=started_at,
         )
         recorder = client.start_tool_execution(start)
         recorder.__enter__()
-        _state.tool_put((task_id, session_id, tool_call_id), recorder)
+        cfg = _client._get_plugin_config()
+        max_chars = cfg.max_chars if cfg is not None else None
+        try:
+            try:
+                recorder.set_result(
+                    arguments=_redact.safe_value(args, max_chars=max_chars, parse_json_strings=True),
+                    result=_redact.safe_value(result, max_chars=max_chars, parse_json_strings=True),
+                    completed_at=completed_at,
+                )
+            except Exception as exc:
+                logger.warning("hermes-plugin-sigil: tool set_result failed: %s", exc)
+        finally:
+            try:
+                recorder.__exit__(None, None, None)
+            except Exception as exc:
+                logger.warning("hermes-plugin-sigil: tool recorder __exit__ failed: %s", exc)
     except Exception as exc:
-        logger.warning("hermes-plugin-sigil: on_pre_tool_call failed: %s", exc)
-
-
-def on_post_tool_call(
-    *,
-    tool_name: str = "",
-    args: Any = None,
-    result: Any = None,
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    **_: Any,
-) -> None:
-    # Append a tool message to the running conversation so the next
-    # pre_api_request input reflects this tool's result.
-    if tool_call_id:
-        try:
-            content = result if isinstance(result, str) else json.dumps(result, default=str)
-        except Exception:
-            content = repr(result)
-        _state.convo_append(
-            _convo_key(task_id, session_id),
-            {"role": "tool", "tool_call_id": tool_call_id, "content": content},
-        )
-
-    recorder = _state.tool_pop((task_id, session_id, tool_call_id))
-    if recorder is None:
-        return
-
-    cfg = _client._get_plugin_config()
-    max_chars = cfg.max_chars if cfg is not None else None
-    try:
-        try:
-            recorder.set_result(
-                arguments=_redact.safe_value(args, max_chars=max_chars, parse_json_strings=True),
-                result=_redact.safe_value(result, max_chars=max_chars, parse_json_strings=True),
-            )
-        except Exception as exc:
-            logger.warning("hermes-plugin-sigil: tool set_result failed: %s", exc)
-    finally:
-        try:
-            recorder.__exit__(None, None, None)
-        except Exception as exc:
-            logger.warning("hermes-plugin-sigil: tool recorder __exit__ failed: %s", exc)
+        logger.warning("hermes-plugin-sigil: on_post_tool_call failed: %s", exc)
 
 
 def on_session_end(*, session_id: str = "", **_: Any) -> None:

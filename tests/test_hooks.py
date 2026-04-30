@@ -118,16 +118,18 @@ def test_pre_post_api_request_round_trip(patch_client) -> None:
     assert any(p.kind == PartKind.TEXT and "4" in p.text for p in output_messages[0].parts)
 
 
-def test_pre_post_tool_call_round_trip(patch_client) -> None:
+def test_post_tool_call_records_full_round_trip(patch_client) -> None:
     args = {"path": "/tmp/foo.txt", "limit": 100}
     result = {"content": "hello world", "total_lines": 1}
 
-    _hooks.on_pre_tool_call(
+    _hooks.on_post_tool_call(
         tool_name="read_file",
         args=args,
+        result=result,
         task_id="t1",
         session_id="s1",
         tool_call_id="tc_42",
+        duration_ms=42,
     )
 
     assert len(patch_client.start_tool_execution_calls) == 1
@@ -138,25 +140,18 @@ def test_pre_post_tool_call_round_trip(patch_client) -> None:
     assert start.conversation_id == "s1"
     assert start.agent_name == "hermes"
     assert start.include_content is True
+    assert start.started_at is not None
 
     rec = patch_client._next_tool_recorder
     assert rec.entered
-
-    _hooks.on_post_tool_call(
-        tool_name="read_file",
-        args=args,
-        result=result,
-        task_id="t1",
-        session_id="s1",
-        tool_call_id="tc_42",
-    )
-
     assert rec.exited
-    assert _state.tool_pop(("t1", "s1", "tc_42")) is None
     final = rec.set_result_calls[-1]
     # Args/result pass through redactor — values are echoed since they're tiny
     assert final["arguments"] == {"path": "/tmp/foo.txt", "limit": 100}
     assert final["result"] == {"content": "hello world", "total_lines": 1}
+    # completed_at - started_at should be ~duration_ms
+    delta_ms = (final["completed_at"] - start.started_at).total_seconds() * 1000
+    assert delta_ms == pytest.approx(42, abs=1)
 
 
 def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,7 +179,6 @@ def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch
     # All hooks should silently no-op
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
     _hooks.on_post_api_request(task_id="t", session_id="s", api_call_count=1)
-    _hooks.on_pre_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc")
     _hooks.on_post_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc")
     _hooks.on_session_end()
     assert constructed == []
@@ -206,7 +200,7 @@ def test_client_init_failure_is_cached(monkeypatch: pytest.MonkeyPatch, env_cred
     monkeypatch.setattr(sigil_sdk, "Client", boom)
 
     _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
-    _hooks.on_pre_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc")
+    _hooks.on_post_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc")
     _hooks.on_session_end()
 
     assert call_count["n"] == 1, "client construction must only be retried once after failure"
@@ -314,7 +308,7 @@ def test_post_api_request_without_pre_is_safe(patch_client) -> None:
     _hooks.on_post_api_request(task_id="t", session_id="s", api_call_count=999, assistant_message={"content": "x"})
 
 
-def test_post_tool_call_without_pre_is_safe(patch_client) -> None:
+def test_post_tool_call_with_unknown_id_is_safe(patch_client) -> None:
     _hooks.on_post_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="ghost")
 
 
@@ -336,7 +330,7 @@ def test_sample_rate_zero_skips_recording(monkeypatch: pytest.MonkeyPatch, patch
         task_id="t", session_id="s", model="m", provider="p",
         messages=[{"role": "user", "content": "hi"}], api_call_count=1,
     )
-    _hooks.on_pre_tool_call(tool_name="x", task_id="t", session_id="s", tool_call_id="tc1")
+    _hooks.on_post_tool_call(tool_name="x", args={}, result="ok", task_id="t", session_id="s", tool_call_id="tc1")
 
     assert patch_client.start_generation_calls == []
     assert patch_client.start_tool_execution_calls == []
@@ -498,21 +492,16 @@ def test_running_convo_includes_assistant_and_tool_results(patch_client) -> None
     _hooks.on_pre_api_request(
         task_id="t1", session_id="s1", model="m", provider="p", api_call_count=1,
     )
-    asst1 = {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{"id": "tc_1", "function": {"name": "search", "arguments": '{"q":"X"}'}}],
-    }
     _hooks.on_post_api_request(
         task_id="t1", session_id="s1", api_call_count=1, model="m",
-        assistant_message=asst1, usage={}, finish_reason="tool_calls",
+        usage={}, finish_reason="tool_calls",
     )
-    # Tool runs
-    _hooks.on_pre_tool_call(
-        tool_name="search", task_id="t1", session_id="s1", tool_call_id="tc_1",
-    )
+    # Tool runs — post_tool_call synthesizes the assistant tool_call message
+    # and appends the tool result, both into the running convo.
     _hooks.on_post_tool_call(
-        tool_name="search", task_id="t1", session_id="s1", tool_call_id="tc_1",
+        tool_name="search",
+        args={"q": "X"},
+        task_id="t1", session_id="s1", tool_call_id="tc_1",
         result="found 3 results",
     )
     # Call #2 — model gets to see user msg + asst tool call + tool result
