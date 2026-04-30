@@ -83,15 +83,14 @@ def reset_module_state() -> None:
 
 @pytest.fixture
 def env_creds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both channels configured."""
-    # Generations channel
-    monkeypatch.setenv("HERMES_SIGIL_ENDPOINT", "http://localhost/api/v1/generations:export")
-    monkeypatch.setenv("HERMES_SIGIL_INSTANCE_ID", "stack-1")
-    monkeypatch.setenv("HERMES_SIGIL_API_KEY", "glc_secret")
-    # OTel channel
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_ENDPOINT", "http://localhost/otlp")
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_INSTANCE_ID", "stack-1")
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_TOKEN", "glc_otlp_secret")
+    """Both channels configured under the canonical SIGIL_* schema."""
+    monkeypatch.setenv("SIGIL_ENDPOINT", "http://localhost/api/v1/generations:export")
+    monkeypatch.setenv("SIGIL_PROTOCOL", "http")
+    monkeypatch.setenv("SIGIL_AUTH_MODE", "basic")
+    monkeypatch.setenv("SIGIL_AUTH_TENANT_ID", "stack-1")
+    monkeypatch.setenv("SIGIL_AUTH_TOKEN", "glc_secret")
+    # OTel reuses SIGIL_AUTH_TOKEN via the SDK helper's fallback.
+    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
 
 
 @pytest.fixture

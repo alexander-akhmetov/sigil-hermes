@@ -5,9 +5,12 @@ generation and every tool invocation (`post_tool_call`) as a Sigil tool
 execution. On `on_session_end`, flushes the SDK's HTTP exporter and any OTel
 providers the plugin installed.
 
-Two independent channels — see README:
-  - Generations:  HERMES_SIGIL_ENDPOINT / _INSTANCE_ID / _API_KEY
-  - OTel (traces + metrics):  HERMES_SIGIL_OTLP_ENDPOINT / _INSTANCE_ID / _TOKEN
+Configuration is the canonical Sigil ``SIGIL_*`` schema — see README:
+  - Generations:  ``SIGIL_ENDPOINT`` / ``SIGIL_PROTOCOL`` / ``SIGIL_AUTH_*``
+  - OTel:         ``SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT`` (+ optional
+                  ``SIGIL_OTEL_AUTH_TOKEN`` falling back to ``SIGIL_AUTH_TOKEN``)
+  - Plugin-only:  ``SIGIL_HERMES_SAMPLE_RATE`` / ``SIGIL_HERMES_MAX_CHARS`` /
+                  ``SIGIL_HERMES_OTEL_AUTO``
 
 The plugin fails open: missing credentials, SDK errors, exporter failures, and
 network errors all become silent no-ops after at most one warning log. The

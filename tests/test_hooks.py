@@ -155,7 +155,18 @@ def test_post_tool_call_records_full_round_trip(patch_client) -> None:
 
 
 def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No HERMES_SIGIL_* set → no Client constructed, all hooks no-op."""
+    """No SIGIL_* creds set → no Client constructed, all hooks no-op."""
+    for name in (
+        "SIGIL_ENDPOINT",
+        "SIGIL_PROTOCOL",
+        "SIGIL_AUTH_MODE",
+        "SIGIL_AUTH_TENANT_ID",
+        "SIGIL_AUTH_TOKEN",
+        "SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    # Also delete any leftover legacy names from a host shell.
     for name in (
         "HERMES_SIGIL_ENDPOINT",
         "HERMES_SIGIL_INSTANCE_ID",
@@ -313,16 +324,12 @@ def test_post_tool_call_with_unknown_id_is_safe(patch_client) -> None:
 
 
 def test_sample_rate_zero_skips_recording(monkeypatch: pytest.MonkeyPatch, patch_client) -> None:
-    """HERMES_SIGIL_SAMPLE_RATE=0 → pre-hooks short-circuit, no recorder created."""
+    """SIGIL_HERMES_SAMPLE_RATE=0 → pre-hooks short-circuit, no recorder created."""
     from hermes_plugin_sigil import _client, _config
 
     monkeypatch.setattr(
         _client, "_CONFIG",
-        _config.SigilPluginConfig(
-            generations=None,
-            otlp=None,
-            sample_rate=0.0,
-        ),
+        _config.SigilPluginConfig(sample_rate=0.0),
         raising=False,
     )
 
@@ -531,7 +538,7 @@ def test_post_llm_call_clears_running_convo(patch_client) -> None:
 
 
 def test_sample_rate_one_records_everything(patch_client) -> None:
-    """HERMES_SIGIL_SAMPLE_RATE=1.0 (default) → every call recorded."""
+    """SIGIL_HERMES_SAMPLE_RATE=1.0 (default) → every call recorded."""
     _hooks.on_pre_api_request(
         task_id="t", session_id="s", model="m", provider="p",
         messages=[{"role": "user", "content": "hi"}], api_call_count=1,
@@ -539,18 +546,25 @@ def test_sample_rate_one_records_everything(patch_client) -> None:
     assert len(patch_client.start_generation_calls) == 1
 
 
-def test_client_config_uses_http_protocol_with_basic_auth_when_generations_configured(
+def test_client_called_with_content_capture_override_when_generations_configured(
     monkeypatch: pytest.MonkeyPatch, env_creds: None,
 ) -> None:
-    """When HERMES_SIGIL_* generation creds are set, SDK gets protocol=http + basic auth."""
+    """Generations configured + no SIGIL_CONTENT_CAPTURE_MODE → Client gets content_capture=full only.
+
+    The SDK's env-resolution provides endpoint/protocol/auth — the plugin must
+    not reconstruct them. The plugin only overrides content_capture so tool I/O
+    stays visible.
+    """
     import sigil_sdk
+    from sigil_sdk import ContentCaptureMode
 
     from hermes_plugin_sigil import _client, _otel
 
+    monkeypatch.delenv("SIGIL_CONTENT_CAPTURE_MODE", raising=False)
     captured: list[Any] = []
 
-    def factory(config: Any) -> Any:
-        captured.append(config)
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        captured.append(args[0] if args else None)
         from tests.conftest import FakeClient
         return FakeClient()
 
@@ -560,32 +574,80 @@ def test_client_config_uses_http_protocol_with_basic_auth_when_generations_confi
     assert _client._get_client() is not None
     assert len(captured) == 1
     cfg = captured[0]
-    assert cfg.generation_export.protocol == "http"
-    assert cfg.generation_export.endpoint == "http://localhost/api/v1/generations:export"
-    assert cfg.generation_export.auth.mode == "basic"
-    assert cfg.generation_export.auth.tenant_id == "stack-1"
-    assert cfg.generation_export.auth.basic_password == "glc_secret"
+    # The override is content_capture only; transport is left to env resolution.
+    assert cfg.content_capture == ContentCaptureMode.FULL
+    assert cfg.generation_export.endpoint is None  # SDK resolves from SIGIL_ENDPOINT
 
 
-def test_client_config_uses_protocol_none_when_only_otlp_configured(
-    monkeypatch: pytest.MonkeyPatch,
+def test_client_called_with_no_args_when_content_capture_mode_set(
+    monkeypatch: pytest.MonkeyPatch, env_creds: None,
 ) -> None:
-    """When only OTLP creds are set, the SDK's HTTP exporter is disabled."""
+    """If SIGIL_CONTENT_CAPTURE_MODE is set, the plugin defers entirely to env."""
     import sigil_sdk
 
     from hermes_plugin_sigil import _client, _otel
 
-    # Only OTLP, no generations
-    for name in ("HERMES_SIGIL_ENDPOINT", "HERMES_SIGIL_INSTANCE_ID", "HERMES_SIGIL_API_KEY"):
+    monkeypatch.setenv("SIGIL_CONTENT_CAPTURE_MODE", "no_tool_content")
+    captured: list[tuple[tuple, dict]] = []
+
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        captured.append((args, kwargs))
+        from tests.conftest import FakeClient
+        return FakeClient()
+
+    monkeypatch.setattr(sigil_sdk, "Client", factory)
+    monkeypatch.setattr(_otel, "setup_if_needed", lambda cfg: True)
+
+    assert _client._get_client() is not None
+    assert len(captured) == 1
+    args, kwargs = captured[0]
+    assert args == () and kwargs == {}
+
+
+def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plugin must not recognize the old HERMES_SIGIL_* namespace as configuring channels."""
+    for name in (
+        "SIGIL_ENDPOINT",
+        "SIGIL_PROTOCOL",
+        "SIGIL_AUTH_MODE",
+        "SIGIL_AUTH_TENANT_ID",
+        "SIGIL_AUTH_TOKEN",
+        "SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_ENDPOINT", "http://localhost/otlp")
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_INSTANCE_ID", "stack-1")
-    monkeypatch.setenv("HERMES_SIGIL_OTLP_TOKEN", "glc_otlp_secret")
+    monkeypatch.setenv("HERMES_SIGIL_ENDPOINT", "http://legacy/api")
+    monkeypatch.setenv("HERMES_SIGIL_INSTANCE_ID", "stack-1")
+    monkeypatch.setenv("HERMES_SIGIL_API_KEY", "glc_secret")
+    monkeypatch.setenv("HERMES_SIGIL_OTLP_ENDPOINT", "http://legacy/otlp")
+
+    import sigil_sdk
+
+    def boom(*_: Any, **__: Any) -> Any:
+        raise AssertionError("Client must not be constructed when only legacy names are set")
+
+    monkeypatch.setattr(sigil_sdk, "Client", boom)
+
+    _hooks.on_pre_api_request(task_id="t", session_id="s", model="m", provider="p", messages=[], api_call_count=1)
+
+
+def test_client_config_uses_protocol_none_when_only_otel_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OTel-only mode: no SIGIL_AUTH_TOKEN/MODE → SDK's HTTP exporter is disabled."""
+    import sigil_sdk
+
+    from hermes_plugin_sigil import _client, _otel
+
+    # Strip any generation creds; keep only the OTel endpoint.
+    for name in ("SIGIL_AUTH_TOKEN", "SIGIL_AUTH_MODE", "SIGIL_AUTH_TENANT_ID", "SIGIL_ENDPOINT", "SIGIL_PROTOCOL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp/otlp")
 
     captured: list[Any] = []
 
-    def factory(config: Any) -> Any:
-        captured.append(config)
+    def factory(*args: Any, **kwargs: Any) -> Any:
+        captured.append(args[0] if args else kwargs.get("config"))
         from tests.conftest import FakeClient
         return FakeClient()
 

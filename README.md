@@ -20,44 +20,41 @@ plugins:
 
 ## Configure
 
-Two independent channels, OTel (metrics and traces) and Sigil (conversation data), you need to set both.
-You can find the credentials and URLs in your Grafana account: `https://grafana.com/orgs/{org}`
+Two independent channels — OTel (metrics + traces) and Sigil (conversation data) — share most credentials under the canonical `SIGIL_*` schema. You can find URLs and tokens in your Grafana account: `https://grafana.com/orgs/{org}`.
 
 ```bash
 # Generations → Sigil API (Conversations)
-export HERMES_SIGIL_ENDPOINT="https://sigil-prod-<region>.grafana.net"
-export HERMES_SIGIL_INSTANCE_ID="<sigil-instance-id>"
-
-# You can find this token in your stack info -> "AI Observability" card
-# in https://grafana.com/orgs/{org-id}/stacks/{stack-id}`
-export HERMES_SIGIL_API_KEY="<sigil:write token>"
+export SIGIL_ENDPOINT="https://sigil-prod-<region>.grafana.net"
+export SIGIL_PROTOCOL=http
+export SIGIL_AUTH_MODE=basic
+export SIGIL_AUTH_TENANT_ID="<grafana-cloud-stack-id>"
+# Find this token in your stack info → "AI Observability" card at
+# https://grafana.com/orgs/{org-id}/stacks/{stack-id}
+export SIGIL_AUTH_TOKEN="<sigil:write token>"
 
 # Traces + metrics → Grafana Cloud OTLP gateway
-export HERMES_SIGIL_OTLP_ENDPOINT="https://otlp-gateway-prod-<region>.grafana.net/otlp"
-export HERMES_SIGIL_OTLP_INSTANCE_ID="<grafana-cloud-instance-id>"
-
-# You can find this token in your stack info -> "OpenTelemetry" card
-# in https://grafana.com/orgs/{org-id}/stacks/{stack-id}`
-export HERMES_SIGIL_OTLP_TOKEN="<grafana-cloud-otlp-token>"
-
-# Enable sending conversations content. Set to metadata_only to disable.
-export HERMES_SIGIL_CONTENT_CAPTURE=full
+export SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp-gateway-prod-<region>.grafana.net/otlp"
+# Defaults to SIGIL_AUTH_TOKEN. Override only if the OTel token differs —
+# e.g. when generations and OTel point at different Grafana Cloud stacks.
+export SIGIL_OTEL_AUTH_TOKEN="<grafana-cloud-otlp-token>"
 ```
+
 ### Optional
 
 | Variable | Default | Description |
 |---|---|---|
-| `HERMES_SIGIL_AGENT_NAME` | `hermes` | `service.name` resource attribute on every span |
-| `HERMES_SIGIL_SAMPLE_RATE` | `1.0` | Fraction of LLM and tool calls to record, `0.0`–`1.0` |
-| `HERMES_SIGIL_CONTENT_CAPTURE` | `full` | `full` / `no_tool_content` / `metadata_only`. Defaults to `full` so tool args and results are visible — the SDK's own default is `no_tool_content`, which leaves agent conversations looking empty. |
-| `HERMES_SIGIL_MAX_CHARS` | `12000` | Per-string truncation cap for redacted payloads |
-| `HERMES_SIGIL_DEBUG` | `false` | Verbose plugin logs |
-| `HERMES_SIGIL_OTEL_AUTO` | `true` | Set `false` if your application already installs a `TracerProvider` / `MeterProvider` |
+| `SIGIL_AGENT_NAME` | `hermes` | Per-generation `gen_ai.agent.name` (read by the SDK) |
+| `SIGIL_OTEL_SERVICE_NAME` | `hermes` | OTel resource `service.name` (falls back to `OTEL_SERVICE_NAME`) |
+| `SIGIL_CONTENT_CAPTURE_MODE` | `full` | `full` / `no_tool_content` / `metadata_only`. Plugin defaults to `full` so tool args and results are visible — the SDK's own default is `no_tool_content`, which leaves agent conversations looking empty. |
+| `SIGIL_DEBUG` | `false` | Verbose SDK logs |
+| `SIGIL_HERMES_SAMPLE_RATE` | `1.0` | Fraction of LLM and tool calls to record, `0.0`–`1.0` |
+| `SIGIL_HERMES_MAX_CHARS` | `12000` | Per-string truncation cap for redacted payloads |
+| `SIGIL_HERMES_OTEL_AUTO` | `true` | Set `false` if your application already installs a `TracerProvider` / `MeterProvider` |
 
 ## Verify
 
 ```bash
-HERMES_SIGIL_DEBUG=true hermes
+SIGIL_DEBUG=true hermes
 ```
 
 In `~/.hermes/logs/agent.log` you should see:
@@ -65,7 +62,7 @@ In `~/.hermes/logs/agent.log` you should see:
 ```
 hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter
 hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter
-hermes-plugin-sigil: Sigil client initialized (generations=on, otlp=on)
+hermes-plugin-sigil: Sigil client initialized (generations=configured, otel=configured)
 ```
 
 Ask hermes anything, then check **Grafana Cloud → AI Observability → Conversations**.

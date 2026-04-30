@@ -44,19 +44,22 @@ def _proxy_meter_active() -> bool:
     return isinstance(metrics.get_meter_provider(), _ProxyMeterProvider)
 
 
-def _make_cfg(otel_auto: bool = True) -> _config.SigilPluginConfig:
+@pytest.fixture
+def otel_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Canonical OTel env: endpoint + auth that the SDK helpers will compose."""
+    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
+    monkeypatch.setenv("SIGIL_AUTH_TENANT_ID", "stack-1")
+    monkeypatch.setenv("SIGIL_AUTH_TOKEN", "glc_otlp_secret")
+
+
+def _make_cfg(*, otel_auto: bool = True, otel_configured: bool = True) -> _config.SigilPluginConfig:
     return _config.SigilPluginConfig(
-        generations=None,
-        otlp=_config.OTLPConfig(
-            endpoint="http://localhost/otlp",
-            instance_id="stack-1",
-            token="glc_otlp_secret",
-        ),
         otel_auto=otel_auto,
+        otel_configured=otel_configured,
     )
 
 
-def test_auto_setup_installs_both_providers_when_proxies_are_global() -> None:
+def test_auto_setup_installs_both_providers_when_proxies_are_global(otel_env) -> None:
     assert _proxy_tracer_active(), "test fixture should leave a ProxyTracerProvider in place"
     assert _proxy_meter_active(), "test fixture should leave a proxy MeterProvider in place"
     cfg = _make_cfg(otel_auto=True)
@@ -66,7 +69,7 @@ def test_auto_setup_installs_both_providers_when_proxies_are_global() -> None:
     assert isinstance(metrics.get_meter_provider(), MeterProvider)
 
 
-def test_auto_setup_is_idempotent() -> None:
+def test_auto_setup_is_idempotent(otel_env) -> None:
     cfg = _make_cfg(otel_auto=True)
     _otel.setup_if_needed(cfg)
     first_tracer = trace.get_tracer_provider()
@@ -76,7 +79,7 @@ def test_auto_setup_is_idempotent() -> None:
     assert metrics.get_meter_provider() is first_meter
 
 
-def test_auto_setup_skipped_when_user_has_both_providers() -> None:
+def test_auto_setup_skipped_when_user_has_both_providers(otel_env) -> None:
     custom_tracer = TracerProvider()
     custom_meter = MeterProvider()
     trace.set_tracer_provider(custom_tracer)
@@ -88,7 +91,7 @@ def test_auto_setup_skipped_when_user_has_both_providers() -> None:
     assert metrics.get_meter_provider() is custom_meter
 
 
-def test_auto_setup_installs_only_missing_provider() -> None:
+def test_auto_setup_installs_only_missing_provider(otel_env) -> None:
     """When host owns one provider, plugin installs only the other."""
     custom_tracer = TracerProvider()
     trace.set_tracer_provider(custom_tracer)
@@ -100,7 +103,7 @@ def test_auto_setup_installs_only_missing_provider() -> None:
     assert isinstance(metrics.get_meter_provider(), MeterProvider)  # plugin installed
 
 
-def test_auto_setup_disabled_returns_false_with_proxies() -> None:
+def test_auto_setup_disabled_returns_false_with_proxies(otel_env) -> None:
     cfg = _make_cfg(otel_auto=False)
     ok = _otel.setup_if_needed(cfg)
     assert ok is False
@@ -108,7 +111,7 @@ def test_auto_setup_disabled_returns_false_with_proxies() -> None:
     assert _proxy_meter_active(), "no meter provider must be installed when auto is disabled"
 
 
-def test_auto_setup_disabled_uses_existing_user_providers() -> None:
+def test_auto_setup_disabled_uses_existing_user_providers(otel_env) -> None:
     custom_tracer = TracerProvider()
     custom_meter = MeterProvider()
     trace.set_tracer_provider(custom_tracer)
@@ -120,10 +123,37 @@ def test_auto_setup_disabled_uses_existing_user_providers() -> None:
     assert metrics.get_meter_provider() is custom_meter
 
 
-def test_no_otlp_config_is_no_op_for_otel() -> None:
-    """When OTLP creds are missing, plugin doesn't install any provider."""
-    cfg = _config.SigilPluginConfig(generations=None, otlp=None)
+def test_no_otel_env_is_no_op_for_otel() -> None:
+    """When no OTel endpoint env is set, the plugin doesn't install a provider."""
+    cfg = _make_cfg(otel_configured=False)
     ok = _otel.setup_if_needed(cfg)
     assert ok is False
     assert _proxy_tracer_active()
     assert _proxy_meter_active()
+
+
+def test_sigil_otel_endpoint_takes_precedence_over_otel_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT must win over OTEL_EXPORTER_OTLP_ENDPOINT."""
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://other:4318")
+    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "http://sigil:4318")
+
+    captured: dict[str, object] = {}
+
+    class CaptureExporter(OTLPSpanExporter):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+        CaptureExporter,
+    )
+    cfg = _make_cfg(otel_auto=True)
+    _otel.setup_if_needed(cfg)
+    assert captured.get("endpoint") == "http://sigil:4318/v1/traces"
+    # Process env stays untouched — plugin must not unset OTEL_*.
+    import os
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://other:4318"

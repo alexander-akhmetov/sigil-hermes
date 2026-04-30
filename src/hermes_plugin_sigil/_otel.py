@@ -1,21 +1,24 @@
 """OpenTelemetry TracerProvider + MeterProvider auto-setup.
 
-The Sigil SDK does not own OTel — applications must install providers (see
-``grafana-cloud.md`` quickstart). This plugin acts as the application setup
-for hermes users who haven't wired OTel themselves.
+The Sigil SDK does not own OTel — applications must install providers. This
+plugin acts as the application setup for hermes users who haven't wired OTel
+themselves.
 
-Both providers point at the Grafana Cloud OTLP gateway. Trace and metric
-endpoints are derived from the configured base URL by appending ``/v1/traces``
-and ``/v1/metrics`` respectively.
+Exporter kwargs (endpoint, headers, insecure) and resource attributes are
+resolved by ``sigil_sdk.otel`` helpers from the canonical ``SIGIL_*`` schema,
+honoring ``SIGIL_<OTEL_VAR>`` precedence over standard ``OTEL_*`` names.
+``/v1/traces`` and ``/v1/metrics`` are appended to the resolved endpoint per
+signal — same convention as ``OTEL_EXPORTER_OTLP_ENDPOINT``.
 
 If the host application has already installed a non-proxy provider, the plugin
 leaves it untouched and uses the host's setup.
 """
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Any
+
+from sigil_sdk.otel import exporter_config_from_env, resource_attributes_from_env
 
 from . import _config
 
@@ -24,17 +27,6 @@ logger = logging.getLogger(__name__)
 _INSTALLED_TRACER_PROVIDER: Any = None
 _INSTALLED_METER_PROVIDER: Any = None
 _SETUP_DONE = False
-
-
-def _basic_auth(instance_id: str, token: str) -> str:
-    creds = base64.b64encode(f"{instance_id}:{token}".encode()).decode()
-    return f"Basic {creds}"
-
-
-def _resource(agent_name: str):
-    from opentelemetry.sdk.resources import Resource
-
-    return Resource.create({"service.name": agent_name})
 
 
 def _is_proxy_tracer_provider(provider: Any) -> bool:
@@ -53,31 +45,45 @@ def _is_proxy_meter_provider(provider: Any) -> bool:
     return isinstance(provider, _ProxyMeterProvider)
 
 
-def _install_tracer_provider(cfg: _config.OTLPConfig, agent_name: str) -> Any:
+def _build_resource():
+    from opentelemetry.sdk.resources import Resource
+
+    attrs = resource_attributes_from_env()
+    if "service.name" not in attrs:
+        attrs["service.name"] = "hermes"
+    return Resource.create(attrs)
+
+
+def _exporter_kwargs(suffix: str) -> dict[str, Any]:
+    kwargs = dict(exporter_config_from_env())
+    endpoint = kwargs.get("endpoint")
+    if isinstance(endpoint, str):
+        kwargs["endpoint"] = f"{endpoint}{suffix}"
+    # The HTTP OTLP exporters infer transport security from the URL scheme;
+    # they do not accept an `insecure` kwarg.
+    kwargs.pop("insecure", None)
+    return kwargs
+
+
+def _install_tracer_provider() -> Any:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    exporter = OTLPSpanExporter(
-        endpoint=f"{cfg.endpoint}/v1/traces",
-        headers={"Authorization": _basic_auth(cfg.instance_id, cfg.token)},
-    )
-    provider = TracerProvider(resource=_resource(agent_name))
+    exporter = OTLPSpanExporter(**_exporter_kwargs("/v1/traces"))
+    provider = TracerProvider(resource=_build_resource())
     provider.add_span_processor(BatchSpanProcessor(exporter))
     return provider
 
 
-def _install_meter_provider(cfg: _config.OTLPConfig, agent_name: str) -> Any:
+def _install_meter_provider() -> Any:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-    exporter = OTLPMetricExporter(
-        endpoint=f"{cfg.endpoint}/v1/metrics",
-        headers={"Authorization": _basic_auth(cfg.instance_id, cfg.token)},
-    )
+    exporter = OTLPMetricExporter(**_exporter_kwargs("/v1/metrics"))
     reader = PeriodicExportingMetricReader(exporter)
-    return MeterProvider(resource=_resource(agent_name), metric_readers=[reader])
+    return MeterProvider(resource=_build_resource(), metric_readers=[reader])
 
 
 def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
@@ -95,8 +101,8 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
     if _SETUP_DONE:
         return _INSTALLED_TRACER_PROVIDER is not None or _INSTALLED_METER_PROVIDER is not None or _has_any_provider()
 
-    if plugin_cfg.otlp is None:
-        # No OTLP creds → only set up if the host has its own provider.
+    if not plugin_cfg.otel_configured:
+        # No OTel endpoint env → only set up if the host has its own provider.
         _SETUP_DONE = True
         return _has_any_provider()
 
@@ -116,7 +122,7 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
     if not plugin_cfg.otel_auto:
         if needs_tracer or needs_meter:
             logger.warning(
-                "hermes-plugin-sigil: HERMES_SIGIL_OTEL_AUTO=false and no provider is configured "
+                "hermes-plugin-sigil: SIGIL_HERMES_OTEL_AUTO=false and no provider is configured "
                 "for %s — telemetry is disabled.",
                 "TracerProvider+MeterProvider" if (needs_tracer and needs_meter)
                 else ("TracerProvider" if needs_tracer else "MeterProvider"),
@@ -126,17 +132,15 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
 
     try:
         if needs_tracer:
-            provider = _install_tracer_provider(plugin_cfg.otlp, plugin_cfg.agent_name)
+            provider = _install_tracer_provider()
             trace.set_tracer_provider(provider)
             _INSTALLED_TRACER_PROVIDER = provider
-            if plugin_cfg.debug:
-                logger.info("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter")
+            logger.debug("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter")
         if needs_meter:
-            provider = _install_meter_provider(plugin_cfg.otlp, plugin_cfg.agent_name)
+            provider = _install_meter_provider()
             metrics.set_meter_provider(provider)
             _INSTALLED_METER_PROVIDER = provider
-            if plugin_cfg.debug:
-                logger.info("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter")
+            logger.debug("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter")
     except Exception as exc:
         logger.warning("hermes-plugin-sigil: failed to set up OTel providers: %s", exc)
         _SETUP_DONE = True

@@ -1,34 +1,23 @@
 """Structural payload redaction.
 
 Ported from the langfuse plugin's ``_safe_value`` family. Applies a depth limit
-of 4, caps dict/list size at 50 entries, and truncates strings to
-``HERMES_SIGIL_MAX_CHARS`` (default 12000). No PII regex — structural shaping
-only. The aim is to bound the size and shape of arbitrary tool I/O before it
-reaches the Sigil exporter.
+of 4, caps dict/list size at 50 entries, and truncates strings to a
+caller-supplied ``max_chars``. No PII regex — structural shaping only. The aim
+is to bound the size and shape of arbitrary tool I/O before it reaches the
+Sigil exporter.
+
+Callers thread their resolved plugin ``max_chars`` (from
+``SIGIL_HERMES_MAX_CHARS``) into every entry call. There is no env fallback
+inside this module.
 """
 from __future__ import annotations
 
 import itertools
 import json
-import os
 from typing import Any
 
-_DEFAULT_MAX_CHARS = 12000
 _MAX_DEPTH = 4
 _MAX_ENTRIES = 50
-
-
-def _max_chars() -> int:
-    raw = os.environ.get("HERMES_SIGIL_MAX_CHARS", "").strip()
-    if not raw:
-        return _DEFAULT_MAX_CHARS
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_MAX_CHARS
-    if value <= 0:
-        return _DEFAULT_MAX_CHARS
-    return value
 
 
 def truncate_text(value: str, max_chars: int) -> str:
@@ -73,22 +62,16 @@ def maybe_parse_json_string(value: str, max_chars: int) -> Any:
 def safe_value(
     value: Any,
     *,
-    max_chars: int | None = None,
+    max_chars: int,
     depth: int = 0,
     parse_json_strings: bool = False,
 ) -> Any:
     """Return a structurally-bounded copy of ``value`` safe to record.
 
-    The env-driven ``max_chars`` is resolved exactly once at the top-level
-    call and threaded through to all recursive calls — a 50x50 nested dict
-    would otherwise re-read ``HERMES_SIGIL_MAX_CHARS`` ~2500 times on the
-    tool-result hot path.
+    ``max_chars`` is required from the caller — every recursive descent uses
+    the same cap so a 50x50 nested dict only needs the value resolved once.
     """
-    if max_chars is None:
-        effective_max = _max_chars()
-    else:
-        effective_max = max_chars
-    return _safe_value(value, effective_max, depth, parse_json_strings)
+    return _safe_value(value, max_chars, depth, parse_json_strings)
 
 
 def _safe_value(value: Any, max_chars: int, depth: int, parse_json_strings: bool) -> Any:

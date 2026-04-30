@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,8 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def _agent_name() -> str:
-    cfg = _client._get_plugin_config()
-    return cfg.agent_name if cfg is not None else "hermes"
+    """Default agent name when the SDK can't resolve one from env/context.
+
+    The SDK reads ``SIGIL_AGENT_NAME`` itself; this fallback only kicks in
+    when neither env nor a context override is set.
+    """
+    return os.environ.get("SIGIL_AGENT_NAME", "").strip() or "hermes"
 
 
 def _convo_key(task_id: str, session_id: str) -> tuple[str, str]:
@@ -35,7 +40,7 @@ def _convo_key(task_id: str, session_id: str) -> tuple[str, str]:
 
 
 def _should_sample() -> bool:
-    """Return True if this trace should be recorded under HERMES_SIGIL_SAMPLE_RATE.
+    """Return True if this trace should be recorded under SIGIL_HERMES_SAMPLE_RATE.
 
     A pre-hook that returns False simply skips ``start_generation`` and
     never stores a recorder, so the matching post-hook becomes a natural
@@ -514,7 +519,9 @@ def on_post_tool_call(
         recorder = client.start_tool_execution(start)
         recorder.__enter__()
         cfg = _client._get_plugin_config()
-        max_chars = cfg.max_chars if cfg is not None else None
+        # cfg is non-None here: _get_client() above only returns a client after
+        # _CONFIG was populated by `_client._get_client()`.
+        max_chars = cfg.max_chars if cfg is not None else 12000
         try:
             try:
                 recorder.set_result(
