@@ -8,6 +8,7 @@ reaches the Sigil exporter.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 from typing import Any
@@ -36,8 +37,15 @@ def truncate_text(value: str, max_chars: int) -> str:
     return value[:max_chars] + f"... [truncated {len(value) - max_chars} chars]"
 
 
-def maybe_parse_json_string(value: str) -> Any:
-    """If ``value`` looks like JSON, return the parsed object; otherwise return as-is."""
+def maybe_parse_json_string(value: str, max_chars: int) -> Any:
+    """If ``value`` looks like JSON, return the parsed object; otherwise return as-is.
+
+    Refuses to parse strings longer than ``max_chars`` — without this guard a
+    multi-megabyte tool result would be fully decoded (allocating the entire
+    parse tree) before any size cap kicked in.
+    """
+    if len(value) > max_chars:
+        return value
     stripped = value.strip()
     if len(stripped) < 2 or stripped[0] not in "{[":
         return value
@@ -92,19 +100,27 @@ def _safe_value(value: Any, max_chars: int, depth: int, parse_json_strings: bool
         return {"type": "bytes", "len": len(value)}
     if isinstance(value, str):
         if parse_json_strings:
-            parsed = maybe_parse_json_string(value)
+            parsed = maybe_parse_json_string(value, max_chars)
             if parsed is not value:
                 return _safe_value(parsed, max_chars, depth, True)
         return truncate_text(value, max_chars)
     if isinstance(value, dict):
+        # Iterate via islice so we never materialize the full items() list —
+        # a multi-million-entry dict would otherwise allocate before the cap.
         return {
             str(k): _safe_value(v, max_chars, depth + 1, parse_json_strings)
-            for k, v in list(value.items())[:_MAX_ENTRIES]
+            for k, v in itertools.islice(value.items(), _MAX_ENTRIES)
         }
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple)):
+        # Sequence slicing returns a view-sized copy — no full materialization.
         return [
             _safe_value(v, max_chars, depth + 1, parse_json_strings)
-            for v in list(value)[:_MAX_ENTRIES]
+            for v in value[:_MAX_ENTRIES]
+        ]
+    if isinstance(value, set):
+        return [
+            _safe_value(v, max_chars, depth + 1, parse_json_strings)
+            for v in itertools.islice(value, _MAX_ENTRIES)
         ]
     if hasattr(value, "__dict__"):
         return _safe_value(vars(value), max_chars, depth + 1, parse_json_strings)
