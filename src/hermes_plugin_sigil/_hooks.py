@@ -514,11 +514,13 @@ def on_post_tool_call(
     if recorder is None:
         return
 
+    cfg = _client._get_plugin_config()
+    max_chars = cfg.max_chars if cfg is not None else None
     try:
         try:
             recorder.set_result(
-                arguments=_redact.safe_value(args, parse_json_strings=True),
-                result=_redact.safe_value(result, parse_json_strings=True),
+                arguments=_redact.safe_value(args, max_chars=max_chars, parse_json_strings=True),
+                result=_redact.safe_value(result, max_chars=max_chars, parse_json_strings=True),
             )
         except Exception as exc:
             logger.warning("hermes-plugin-sigil: tool set_result failed: %s", exc)
