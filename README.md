@@ -20,7 +20,7 @@ plugins:
 
 ## Configure
 
-Two independent channels — OTel (metrics + traces) and Sigil (conversation data) — share most credentials under the canonical `SIGIL_*` schema. You can find URLs and tokens in your Grafana account: `https://grafana.com/orgs/{org}`.
+Two independent channels, each optional: generations under the canonical `SIGIL_*` schema, traces and metrics under the standard OpenTelemetry `OTEL_*` schema. You can find URLs and tokens in your Grafana account: `https://grafana.com/orgs/{org}`.
 
 ```bash
 # Generations → Sigil API (Conversations)
@@ -32,19 +32,20 @@ export SIGIL_AUTH_TENANT_ID="<grafana-cloud-stack-id>"
 # https://grafana.com/orgs/{org-id}/stacks/{stack-id}
 export SIGIL_AUTH_TOKEN="<sigil:write token>"
 
-# Traces + metrics → Grafana Cloud OTLP gateway
-export SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp-gateway-prod-<region>.grafana.net/otlp"
-# Defaults to SIGIL_AUTH_TOKEN. Override only if the OTel token differs —
-# e.g. when generations and OTel point at different Grafana Cloud stacks.
-export SIGIL_OTEL_AUTH_TOKEN="<grafana-cloud-otlp-token>"
+# Traces + metrics → Grafana Cloud OTLP gateway (standard OTel envs)
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otlp-gateway-prod-<region>.grafana.net/otlp"
+# Base64 of "<instance-id>:<grafana-cloud-otlp-token>" — see your stack's
+# "OpenTelemetry" card. Use the same value for both signals or override per
+# signal with OTEL_EXPORTER_OTLP_TRACES_HEADERS / _METRICS_HEADERS.
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64>"
 ```
 
 ### Optional
 
 | Variable | Default | Description |
 |---|---|---|
-| `SIGIL_AGENT_NAME` | `hermes` | Per-generation `gen_ai.agent.name` (read by the SDK) |
-| `SIGIL_OTEL_SERVICE_NAME` | `hermes` | OTel resource `service.name` (falls back to `OTEL_SERVICE_NAME`) |
+| `SIGIL_AGENT_NAME` | `hermes` | Per-generation `gen_ai.agent.name` |
+| `OTEL_SERVICE_NAME` | `hermes` | OTel resource `service.name`. Plugin defaults to `hermes` when this and `OTEL_RESOURCE_ATTRIBUTES`'s `service.name` are both unset. |
 | `SIGIL_CONTENT_CAPTURE_MODE` | `full` | `full` / `no_tool_content` / `metadata_only`. Plugin defaults to `full` so tool args and results are visible — the SDK's own default is `no_tool_content`, which leaves agent conversations looking empty. |
 | `SIGIL_DEBUG` | `false` | Verbose SDK logs |
 | `SIGIL_HERMES_SAMPLE_RATE` | `1.0` | Fraction of LLM and tool calls to record, `0.0`–`1.0` |

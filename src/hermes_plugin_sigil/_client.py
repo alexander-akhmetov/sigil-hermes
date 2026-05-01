@@ -79,7 +79,7 @@ def _get_client(create_if_missing: bool = True) -> Any:
             logger.warning(
                 "hermes-plugin-sigil: no channel configured — set SIGIL_AUTH_TOKEN "
                 "(with SIGIL_ENDPOINT/SIGIL_PROTOCOL/SIGIL_AUTH_*) for generations, "
-                "or SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT for traces+metrics. Telemetry disabled."
+                "or OTEL_EXPORTER_OTLP_ENDPOINT for traces+metrics. Telemetry disabled."
             )
             _CLIENT = _INIT_FAILED
             return None

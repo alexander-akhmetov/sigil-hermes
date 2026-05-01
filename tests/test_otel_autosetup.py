@@ -46,10 +46,12 @@ def _proxy_meter_active() -> bool:
 
 @pytest.fixture
 def otel_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Canonical OTel env: endpoint + auth that the SDK helpers will compose."""
-    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
-    monkeypatch.setenv("SIGIL_AUTH_TENANT_ID", "stack-1")
-    monkeypatch.setenv("SIGIL_AUTH_TOKEN", "glc_otlp_secret")
+    """Standard OTLP env — exporters read these themselves."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost/otlp")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "Authorization=Basic c3RhY2stMTpnbGNfb3RscF9zZWNyZXQ=",
+    )
 
 
 def _make_cfg(*, otel_auto: bool = True, otel_configured: bool = True) -> _config.SigilPluginConfig:
@@ -132,28 +134,26 @@ def test_no_otel_env_is_no_op_for_otel() -> None:
     assert _proxy_meter_active()
 
 
-def test_sigil_otel_endpoint_takes_precedence_over_otel_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT must win over OTEL_EXPORTER_OTLP_ENDPOINT."""
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+def test_default_service_name_is_hermes(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resource defaults service.name to 'hermes' when no OTEL_* override is set."""
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
 
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://other:4318")
-    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "http://sigil:4318")
-
-    captured: dict[str, object] = {}
-
-    class CaptureExporter(OTLPSpanExporter):  # type: ignore[misc]
-        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(
-        "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
-        CaptureExporter,
-    )
     cfg = _make_cfg(otel_auto=True)
     _otel.setup_if_needed(cfg)
-    assert captured.get("endpoint") == "http://sigil:4318/v1/traces"
-    # Process env stays untouched — plugin must not unset OTEL_*.
-    import os
 
-    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://other:4318"
+    provider = trace.get_tracer_provider()
+    assert isinstance(provider, TracerProvider)
+    assert provider.resource.attributes.get("service.name") == "hermes"
+
+
+def test_otel_service_name_env_wins(otel_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OTEL_SERVICE_NAME overrides the plugin's 'hermes' default."""
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "my-app")
+
+    cfg = _make_cfg(otel_auto=True)
+    _otel.setup_if_needed(cfg)
+
+    provider = trace.get_tracer_provider()
+    assert isinstance(provider, TracerProvider)
+    assert provider.resource.attributes.get("service.name") == "my-app"

@@ -5,10 +5,12 @@ generation and every tool invocation (`post_tool_call`) as a Sigil tool
 execution. On `on_session_end`, flushes the SDK's HTTP exporter and any OTel
 providers the plugin installed.
 
-Configuration is the canonical Sigil ``SIGIL_*`` schema — see README:
+Configuration is the canonical Sigil ``SIGIL_*`` schema for the generations
+channel and the standard OpenTelemetry ``OTEL_*`` schema for the OTel channel
+— see README:
   - Generations:  ``SIGIL_ENDPOINT`` / ``SIGIL_PROTOCOL`` / ``SIGIL_AUTH_*``
-  - OTel:         ``SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT`` (+ optional
-                  ``SIGIL_OTEL_AUTH_TOKEN`` falling back to ``SIGIL_AUTH_TOKEN``)
+  - OTel:         ``OTEL_EXPORTER_OTLP_ENDPOINT`` /
+                  ``OTEL_EXPORTER_OTLP_HEADERS`` / ``OTEL_SERVICE_NAME``
   - Plugin-only:  ``SIGIL_HERMES_SAMPLE_RATE`` / ``SIGIL_HERMES_MAX_CHARS`` /
                   ``SIGIL_HERMES_OTEL_AUTO``
 

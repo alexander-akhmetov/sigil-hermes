@@ -162,7 +162,6 @@ def test_missing_credentials_makes_handlers_noop(monkeypatch: pytest.MonkeyPatch
         "SIGIL_AUTH_MODE",
         "SIGIL_AUTH_TENANT_ID",
         "SIGIL_AUTH_TOKEN",
-        "SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -576,7 +575,9 @@ def test_client_called_with_content_capture_override_when_generations_configured
     cfg = captured[0]
     # The override is content_capture only; transport is left to env resolution.
     assert cfg.content_capture == ContentCaptureMode.FULL
-    assert cfg.generation_export.endpoint is None  # SDK resolves from SIGIL_ENDPOINT
+    # The plugin must not pin protocol="none" when generations are configured —
+    # that switch is reserved for OTel-only mode.
+    assert cfg.generation_export.protocol != "none"
 
 
 def test_client_called_with_no_args_when_content_capture_mode_set(
@@ -612,7 +613,6 @@ def test_legacy_hermes_sigil_names_are_ignored(monkeypatch: pytest.MonkeyPatch) 
         "SIGIL_AUTH_MODE",
         "SIGIL_AUTH_TENANT_ID",
         "SIGIL_AUTH_TOKEN",
-        "SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -642,7 +642,7 @@ def test_client_config_uses_protocol_none_when_only_otel_configured(
     # Strip any generation creds; keep only the OTel endpoint.
     for name in ("SIGIL_AUTH_TOKEN", "SIGIL_AUTH_MODE", "SIGIL_AUTH_TENANT_ID", "SIGIL_ENDPOINT", "SIGIL_PROTOCOL"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp/otlp")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otlp")
 
     captured: list[Any] = []
 

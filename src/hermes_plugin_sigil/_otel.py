@@ -4,11 +4,11 @@ The Sigil SDK does not own OTel — applications must install providers. This
 plugin acts as the application setup for hermes users who haven't wired OTel
 themselves.
 
-Exporter kwargs (endpoint, headers, insecure) and resource attributes are
-resolved by ``sigil_sdk.otel`` helpers from the canonical ``SIGIL_*`` schema,
-honoring ``SIGIL_<OTEL_VAR>`` precedence over standard ``OTEL_*`` names.
-``/v1/traces`` and ``/v1/metrics`` are appended to the resolved endpoint per
-signal — same convention as ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+OTel exporter and resource configuration follow the OpenTelemetry env-var
+schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
+``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``). The OTLP HTTP exporters
+read these themselves; the plugin only fills in ``service.name=hermes`` when
+the user hasn't set one.
 
 If the host application has already installed a non-proxy provider, the plugin
 leaves it untouched and uses the host's setup.
@@ -16,9 +16,8 @@ leaves it untouched and uses the host's setup.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
-
-from sigil_sdk.otel import exporter_config_from_env, resource_attributes_from_env
 
 from . import _config
 
@@ -48,21 +47,15 @@ def _is_proxy_meter_provider(provider: Any) -> bool:
 def _build_resource():
     from opentelemetry.sdk.resources import Resource
 
-    attrs = resource_attributes_from_env()
-    if "service.name" not in attrs:
+    # Resource.create() merges OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES
+    # from env, but explicit attrs win on key collision. Only set service.name
+    # when the user hasn't, so OTEL_SERVICE_NAME still takes effect.
+    attrs: dict[str, str] = {}
+    if not os.environ.get("OTEL_SERVICE_NAME") and "service.name=" not in os.environ.get(
+        "OTEL_RESOURCE_ATTRIBUTES", ""
+    ):
         attrs["service.name"] = "hermes"
     return Resource.create(attrs)
-
-
-def _exporter_kwargs(suffix: str) -> dict[str, Any]:
-    kwargs = dict(exporter_config_from_env())
-    endpoint = kwargs.get("endpoint")
-    if isinstance(endpoint, str):
-        kwargs["endpoint"] = f"{endpoint}{suffix}"
-    # The HTTP OTLP exporters infer transport security from the URL scheme;
-    # they do not accept an `insecure` kwarg.
-    kwargs.pop("insecure", None)
-    return kwargs
 
 
 def _install_tracer_provider() -> Any:
@@ -70,7 +63,10 @@ def _install_tracer_provider() -> Any:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    exporter = OTLPSpanExporter(**_exporter_kwargs("/v1/traces"))
+    # OTLPSpanExporter() reads OTEL_EXPORTER_OTLP_ENDPOINT (appending
+    # /v1/traces), OTEL_EXPORTER_OTLP_HEADERS, and OTEL_EXPORTER_OTLP_INSECURE
+    # itself.
+    exporter = OTLPSpanExporter()
     provider = TracerProvider(resource=_build_resource())
     provider.add_span_processor(BatchSpanProcessor(exporter))
     return provider
@@ -81,7 +77,7 @@ def _install_meter_provider() -> Any:
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-    exporter = OTLPMetricExporter(**_exporter_kwargs("/v1/metrics"))
+    exporter = OTLPMetricExporter()
     reader = PeriodicExportingMetricReader(exporter)
     return MeterProvider(resource=_build_resource(), metric_readers=[reader])
 

@@ -5,9 +5,10 @@ are owned by the Sigil SDK's ``Client()`` constructor — see the canonical
 ``SIGIL_*`` schema (``SIGIL_ENDPOINT``, ``SIGIL_PROTOCOL``, ``SIGIL_AUTH_*``,
 ``SIGIL_AGENT_NAME``, ``SIGIL_DEBUG``, ``SIGIL_CONTENT_CAPTURE_MODE``).
 
-OTel exporter resolution (``SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT``,
-``SIGIL_OTEL_AUTH_TOKEN``, ``SIGIL_OTEL_SERVICE_NAME``, ...) is delegated to
-``sigil_sdk.otel`` helpers in ``_otel.py``.
+OTel exporter and resource resolution follow the standard OpenTelemetry env
+schema (``OTEL_EXPORTER_OTLP_ENDPOINT``, ``OTEL_EXPORTER_OTLP_HEADERS``,
+``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``); the OTLP HTTP exporters
+read these themselves.
 
 This module only resolves plugin-specific knobs under the ``SIGIL_HERMES_*``
 prefix (matching the ``SIGIL_CC_*`` / ``SIGIL_PI_*`` convention used by sibling
@@ -75,7 +76,7 @@ def _generations_configured() -> bool:
 
 
 def _otel_configured() -> bool:
-    return bool(_env("SIGIL_OTEL_EXPORTER_OTLP_ENDPOINT") or _env("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    return bool(_env("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def load() -> SigilPluginConfig:
