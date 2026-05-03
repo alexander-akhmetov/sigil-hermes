@@ -260,7 +260,16 @@ def on_pre_llm_call(
         for m in convo
     ):
         convo.append({"role": "user", "content": user_message})
-    _state.convo_set(_convo_key(task_id, session_id), convo)
+    key = _convo_key(task_id, session_id)
+    _state.convo_set(key, convo)
+    # Snapshot the assistant-message count BEFORE post_tool_call extends the
+    # running convo with synthesized tool-call messages. ``_close_pending_for_session``
+    # uses this to peel this turn's assistant outputs off the final history.
+    start_asst_count = sum(
+        1 for m in conversation_history
+        if isinstance(m, dict) and m.get("role") == "assistant"
+    )
+    _state.turn_start_asst_count_set(key, start_asst_count)
 
 
 def on_post_llm_call(
@@ -278,7 +287,9 @@ def on_post_llm_call(
     We pair the new assistant messages with our pending recorders in order.
     """
     _close_pending_for_session(session_id or "", conversation_history)
-    _state.convo_clear(_convo_key(task_id, session_id))
+    key = _convo_key(task_id, session_id)
+    _state.convo_clear(key)
+    _state.turn_start_asst_count_clear(key)
 
 
 def on_pre_api_request(
@@ -392,20 +403,34 @@ def _close_pending_for_session(session_id: str, conversation_history: Any) -> No
     if not pending:
         return
 
-    # Collect new assistant messages from conversation_history in order.
     asst_messages: list[dict] = []
     if isinstance(conversation_history, list):
         for msg in conversation_history:
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 asst_messages.append(msg)
-    # Take the last N assistant messages — those are this turn's outputs.
-    # Pre-existing assistants from earlier turns appear first; pending list
-    # length tells us how many to claim.
-    relevant_asst = asst_messages[-len(pending):] if asst_messages else []
+
+    # Slice off prior turns' assistants using the count snapshotted at
+    # pre_llm_call time. Falling back to 0 keeps tests that skip pre_llm_call
+    # working — they pass single-turn histories where everything is "new".
+    start_count = _state.turn_start_asst_count_get(_convo_key("", session_id or "")) or 0
+    new_asst = asst_messages[start_count:]
+
+    # End-anchor: pair the LAST n_new pending recorders with the n_new new
+    # assistant messages. Hermes increments api_call_count on every iteration,
+    # including discarded retries (incomplete <REASONING_SCRATCHPAD>, invalid-
+    # response retries — see run_agent.py:12944, 11428), so pending can have
+    # more entries than there are kept assistants. Anchoring from the end is
+    # correct because post_llm_call only fires when ``final_response`` is set
+    # (run_agent.py:13771), so the LAST iteration was always kept; leading
+    # discards leave their recorder with no output rather than stealing a
+    # message from a successful call or a prior turn.
+    n_new = len(new_asst)
+    pair_offset = max(0, len(pending) - n_new)
 
     for idx, ((_, _, _api_call_count), gen_state) in enumerate(pending):
         recorder = gen_state.recorder
-        asst = relevant_asst[idx] if idx < len(relevant_asst) else None
+        new_idx = idx - pair_offset
+        asst = new_asst[new_idx] if 0 <= new_idx < n_new else None
         # Catch around the whole prep + set_result path: a malformed assistant
         # message or usage dict would otherwise abort the loop midway, leaving
         # later recorders open and skipping the caller's downstream

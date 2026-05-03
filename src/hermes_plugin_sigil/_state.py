@@ -42,10 +42,16 @@ class GenState:
 _GEN_STATE: dict[tuple[str, str, int], GenState] = {}
 # Per-(task_id, session_id) running hermes-shaped message list. Populated by
 # ``pre_llm_call`` from ``conversation_history`` and extended in-place as
-# ``post_api_request`` and ``post_tool_call`` fire — so each
-# ``pre_api_request`` snapshot reflects the messages going into THIS request,
-# not the start-of-turn snapshot.
+# ``post_tool_call`` fires — so each ``pre_api_request`` snapshot reflects
+# the messages going into THIS request, not the start-of-turn snapshot.
 _CONVO_STATE: dict[tuple[str, str], list[dict]] = {}
+# Count of ``role="assistant"`` messages present in ``conversation_history``
+# at ``pre_llm_call`` time. Used by ``_close_pending_for_session`` to slice
+# off prior turns' assistants and pair only this turn's outputs to recorders.
+# A live count from ``_CONVO_STATE`` is wrong — ``post_tool_call`` extends
+# the running convo with synthesized assistant tool-call messages, which we
+# don't want included.
+_TURN_START_ASST_COUNT: dict[tuple[str, str], int] = {}
 _LOCK = threading.Lock()
 
 
@@ -95,7 +101,23 @@ def convo_clear(key: tuple[str, str]) -> None:
         _CONVO_STATE.pop(key, None)
 
 
+def turn_start_asst_count_set(key: tuple[str, str], count: int) -> None:
+    with _LOCK:
+        _TURN_START_ASST_COUNT[key] = count
+
+
+def turn_start_asst_count_get(key: tuple[str, str]) -> int | None:
+    with _LOCK:
+        return _TURN_START_ASST_COUNT.get(key)
+
+
+def turn_start_asst_count_clear(key: tuple[str, str]) -> None:
+    with _LOCK:
+        _TURN_START_ASST_COUNT.pop(key, None)
+
+
 def reset_for_tests() -> None:
     with _LOCK:
         _GEN_STATE.clear()
         _CONVO_STATE.clear()
+        _TURN_START_ASST_COUNT.clear()

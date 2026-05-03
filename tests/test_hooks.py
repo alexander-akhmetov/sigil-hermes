@@ -466,6 +466,62 @@ def test_completed_at_is_none_when_api_duration_missing(patch_client) -> None:
     assert final["completed_at"] is None
 
 
+def test_close_pending_handles_discarded_retry(patch_client) -> None:
+    """Discarded retry iterations must not steal a prior turn's assistant.
+
+    Hermes increments ``api_call_count`` on every iteration, including ones
+    whose response is discarded (incomplete <REASONING_SCRATCHPAD>, invalid-
+    response retries — see run_agent.py:12944, 11428). The discarded
+    iteration's recorder is still in ``_GEN_STATE`` when ``post_llm_call``
+    fires, but no assistant message was appended for it. End-anchored
+    pairing closes the discarded recorder with empty output rather than
+    pulling an assistant from a successful call or an earlier turn.
+    """
+    # Prior turn established context: one user + one assistant already there.
+    prior_history = [
+        {"role": "user", "content": "first turn"},
+        {"role": "assistant", "content": "first turn answer"},
+        {"role": "user", "content": "second turn"},
+    ]
+    _hooks.on_pre_llm_call(
+        task_id="t1", session_id="s1",
+        conversation_history=prior_history,
+    )
+    # Iteration 1 — response discarded by hermes (`continue` without append).
+    _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=1)
+    rec1 = patch_client._next_gen_recorder
+    _hooks.on_post_api_request(
+        task_id="t1", session_id="s1", api_call_count=1, model="m",
+        usage={"input_tokens": 10, "output_tokens": 5}, finish_reason="stop",
+    )
+    # Iteration 2 — kept; produces final_response.
+    _hooks.on_pre_api_request(task_id="t1", session_id="s1", model="m", provider="p", api_call_count=2)
+    rec2 = patch_client._next_gen_recorder
+    _hooks.on_post_api_request(
+        task_id="t1", session_id="s1", api_call_count=2, model="m",
+        usage={"input_tokens": 12, "output_tokens": 6}, finish_reason="stop",
+    )
+
+    asst_for_iter_2 = {"role": "assistant", "content": "real answer"}
+    _hooks.on_post_llm_call(
+        task_id="t1", session_id="s1",
+        conversation_history=[*prior_history, asst_for_iter_2],
+        assistant_response="real answer",
+    )
+
+    # Discarded iter 1 closes empty — must NOT have stolen "first turn answer".
+    final1 = rec1.set_result_calls[-1]
+    assert final1["output"] == [], (
+        f"discarded iteration must close with empty output, got {final1['output']}"
+    )
+    # iter 2 (the kept one) gets the real assistant.
+    final2 = rec2.set_result_calls[-1]
+    assert any(
+        p.kind == PartKind.TEXT and "real answer" in p.text
+        for p in final2["output"][0].parts
+    )
+
+
 def test_session_end_closes_pending_recorders_on_interrupt(patch_client) -> None:
     """If post_llm_call never fires (interrupt), on_session_end must still close recorders."""
     _hooks.on_pre_api_request(
