@@ -4,6 +4,19 @@ Grafana AI Observability plugin for [Hermes Agent](https://github.com/NousResear
 
 ## Install
 
+### Preferred: let your agent do it
+
+Paste this into Hermes (or any Claude / Codex / Cursor / similar agent that can fetch URLs):
+
+```
+Install and configure the Grafana AI Observability plugin for me by following
+https://raw.githubusercontent.com/alexander-akhmetov/sigil-hermes/main/llms.txt
+```
+
+The agent will walk you through pip install, `~/.hermes/config.yaml`, and the credential collection from Grafana Cloud (two endpoints, two tokens — it knows which is which). It will also explain what conversation data flows by default and how to dial it back before turning anything on.
+
+### Manual
+
 ```bash
 pip install git+https://github.com/alexander-akhmetov/sigil-hermes
 ```
