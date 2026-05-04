@@ -117,25 +117,32 @@ Ask the user to copy:
 2. **Instance ID** → call this `SIGIL_AUTH_TENANT_ID`. Numeric Grafana Cloud
    stack ID.
 
-### Page B: grafana.com → Security → Access Policies
+### Page B: Stack → Administration → Users and access → Cloud access policies
 
-URL: `https://grafana.com/orgs/<org>/access-policies`
+URL: `https://<stack>.grafana.net/a/grafana-auth-app` (same `<stack>` as
+Page A). Click **Create access policy**.
 
 Create **one** access policy token that covers both channels. The same
 token will be reused in `SIGIL_AUTH_TOKEN` and in the OTel
 `Authorization` header.
 
-- **Name**: anything, e.g. `sigil-hermes`
-- **Realm**: select the stack where AI Observability is enabled. The realm
-  must match the stack's region.
-- **Scopes** to add (the picker filters as you type):
-  - `sigil:write` (generations channel)
-  - `metrics:write`, `metrics:import` (OTel metrics)
-  - `traces:write` (OTel traces)
-  - `logs:write`
-  - `alerts:write`, `rules:write`, `profiles:write` (parity with what
-    the OTLP card's "Generate now" button creates, harmless to include)
-- Click **Create**, then **Add token**, copy the token shown once.
+- **Display name** and **Name**: anything, e.g. `sigil-hermes` in both
+  fields. Name is the unique identifier; display name is what shows up
+  in the list.
+- **Scopes** — in the Read/Write/Delete/Import grid, tick:
+  - `metrics`: **Write** and **Import** (OTel metrics)
+  - `traces`: **Write** (OTel traces)
+  - `logs`: **Write**, `profiles`: **Write**, `alerts`: **Write**,
+    `rules`: **Write** — the plugin doesn't use these directly, but
+    matching what the OTLP card's "Generate now" button would create
+    means one token works for any future Grafana Cloud writer in this
+    stack and saves a rotation later.
+- Then use the **Add scope** dropdown to add **`sigil:write`** (the
+  generations channel). It is not in the default grid; the dropdown
+  surfaces it because the AI Observability prerequisite step enabled
+  the plugin in this stack.
+- Click **Create**, then on the new policy click **Add token**, copy the
+  token shown once.
 
 3. The token from this page → call this `SIGIL_AUTH_TOKEN`. Starts with
    `glc_…`. Keep it. It's also the password half of the OTel basic-auth
@@ -238,7 +245,7 @@ appear within a few seconds. Check **Traces** (filter for
 |---|---|---|
 | Plugin lines never appear in `agent.log` | Installed into wrong Python env | Run `which hermes`, install into that env |
 | Plugin loads but `generations=not_configured` | `SIGIL_AUTH_TOKEN` empty or `SIGIL_AUTH_MODE=none` | Re-export and reload shell |
-| `401 Unauthorized` on generations | Access policy missing `sigil:write`, or wrong realm | Edit the Page B policy to include `sigil:write` and confirm the realm matches the stack |
+| `401 Unauthorized` on generations | Access policy missing `sigil:write` | Edit the Page B policy to include `sigil:write` |
 | `401` on OTLP traces/metrics | Access policy missing OTel write scopes, or wrong basic-auth username | Edit the Page B policy to include `metrics:write` / `traces:write` / `logs:write`. Confirm the basic-auth username is the OTLP Instance ID from Page C, not the Sigil one from Page A |
 | `404` on generations | `SIGIL_ENDPOINT` was hand-constructed with wrong region | Copy verbatim from AI Observability → Configuration |
 | Traces/metrics silently absent | Host app installed its own provider, or `SIGIL_HERMES_OTEL_AUTO=false` | Either let the plugin install providers, or have the host app add OTLP exporters |
