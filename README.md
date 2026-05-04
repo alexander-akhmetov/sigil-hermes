@@ -13,7 +13,7 @@ Install and configure the Grafana AI Observability plugin for me by following
 https://raw.githubusercontent.com/alexander-akhmetov/sigil-hermes/main/llms.txt
 ```
 
-The agent will walk you through pip install, `~/.hermes/config.yaml`, and the credential collection from Grafana Cloud (two endpoints, two tokens — it knows which is which). It will also explain what conversation data flows by default and how to dial it back before turning anything on.
+The agent will walk you through pip install, `~/.hermes/config.yaml`, and the credential collection from Grafana Cloud. It will also explain what conversation data flows by default and how to tune it before turning anything on.
 
 ### Manual
 
