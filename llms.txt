@@ -1,0 +1,264 @@
+# hermes-plugin-sigil: agent install guide
+
+You are an LLM agent (likely Hermes itself) helping a user install and configure
+this plugin. Follow the steps below in order. Ask the user for any value you
+do not have. Do **not** guess endpoints, regions, or tokens.
+
+Repo: https://github.com/alexander-akhmetov/sigil-hermes
+Plugin name (in `~/.hermes/config.yaml`): `sigil`
+Hermes upstream: https://github.com/NousResearch/hermes-agent
+
+## What this plugin does
+
+Records every Hermes LLM call and tool invocation to **Grafana Cloud AI
+Observability** (called "Sigil" in package names and env vars). It has two
+independent channels. You can configure either, both, or neither:
+
+| Channel | What flows | Where it shows up |
+|---|---|---|
+| **Generations** | Per-LLM-call records with prompts/responses/tool calls | AI Observability → Conversations |
+| **OTel traces + metrics** | `gen_ai.client.*` spans and metrics | Grafana Cloud Traces / Metrics data sources |
+
+The two channels use two different endpoints but **share a single
+Grafana Cloud access policy token**. As long as the token carries the
+scopes for both (`sigil:write` plus the OTLP write scopes), the same
+secret goes into `SIGIL_AUTH_TOKEN` and into the OTel `Authorization`
+header.
+
+### What conversation data leaves the machine (read this to the user)
+
+By default this plugin sends **full conversation content** to Grafana Cloud:
+
+- Every user prompt and every assistant response (text content).
+- Every tool call's **arguments** and the tool's **result** (truncated per
+  string at `SIGIL_HERMES_MAX_CHARS`, default 12000 chars).
+- Conversation history snapshots that get attached to each generation as
+  `input` so the UI can show the full turn.
+- Token usage, model name, finish reason, and timing.
+
+Tool args and results in particular can include filesystem paths, command
+output, file contents, API responses, and anything else Hermes tools
+produce. Treat the destination Grafana Cloud stack as a place this content
+will live.
+
+This is a deliberate choice. The SDK's own default is `no_tool_content`,
+but the plugin sets `full` because tool args/results are usually the most
+useful thing to see in the AI Observability UI.
+
+The privacy lever is **`SIGIL_CONTENT_CAPTURE_MODE=metadata_only`**. Set
+it before starting Hermes and the plugin still records every call, but
+only counts, model name, usage, finish reason, and timing leave the
+machine. No prompts, no responses, no tool args, no tool results. Both
+channels honor it.
+
+```bash
+# Recommended for privacy-sensitive setups: only counts, model name,
+# usage, timing. No prompts, responses, or tool I/O:
+export SIGIL_CONTENT_CAPTURE_MODE=metadata_only
+
+# Middle ground: keep prompts/responses, drop tool args + results:
+export SIGIL_CONTENT_CAPTURE_MODE=no_tool_content
+
+# Sample only a fraction of calls (defense-in-depth, not redaction):
+export SIGIL_HERMES_SAMPLE_RATE=0.1   # 10%
+```
+
+The plugin does **no PII redaction**. It bounds payload structure
+(depth, entries, per-string length) but does not pattern-match for
+secrets, emails, or keys. If the user has compliance constraints, set
+`SIGIL_CONTENT_CAPTURE_MODE=metadata_only`, or route through a Grafana
+Alloy / OTel Collector that does redaction before forwarding.
+
+## Step 1: Install into the same environment as `hermes`
+
+```bash
+which hermes                     # find the python that runs hermes
+<that-python> -m pip install git+https://github.com/alexander-akhmetov/sigil-hermes
+```
+
+If `hermes` lives in a venv or pipx env, install into *that* env, not the
+system Python. The plugin loads as an entry point. If it is in the wrong
+env, Hermes will not see it.
+
+## Step 2: Enable in `~/.hermes/config.yaml`
+
+`hermes plugins enable sigil` does not currently see pip-installed plugins.
+Edit the YAML directly:
+
+```yaml
+plugins:
+  enabled:
+    - sigil
+```
+
+If the file or `plugins:` block does not exist, create it. Preserve any
+existing entries.
+
+## Step 3: Collect credentials from Grafana Cloud
+
+Tell the user: **"I need you to open three pages in Grafana Cloud and
+copy five values: two endpoint URLs, two instance IDs, and one access
+policy token. I will not guess them."** Then walk them through it.
+
+### Prerequisite: enable the AI Observability plugin
+
+If they have not already: in their Grafana Cloud stack go to
+**Observability → AI Observability**, accept the terms, click **Save**.
+
+### Page A: AI Observability → Configuration
+
+URL pattern: `https://<stack>.grafana.net/a/grafana-aiobservability-app/configuration`
+
+Ask the user to copy:
+
+1. **API URL** → call this `SIGIL_ENDPOINT`. It looks like
+   `https://sigil-prod-<region>.grafana.net`. Do **not** construct this from
+   a region name. The user copies it verbatim from the page.
+2. **Instance ID** → call this `SIGIL_AUTH_TENANT_ID`. Numeric Grafana Cloud
+   stack ID.
+
+### Page B: grafana.com → Security → Access Policies
+
+URL: `https://grafana.com/orgs/<org>/access-policies`
+
+Create **one** access policy token that covers both channels. The same
+token will be reused in `SIGIL_AUTH_TOKEN` and in the OTel
+`Authorization` header.
+
+- **Name**: anything, e.g. `sigil-hermes`
+- **Realm**: select the stack where AI Observability is enabled. The realm
+  must match the stack's region.
+- **Scopes** to add (the picker filters as you type):
+  - `sigil:write` (generations channel)
+  - `metrics:write`, `metrics:import` (OTel metrics)
+  - `traces:write` (OTel traces)
+  - `logs:write`
+  - `alerts:write`, `rules:write`, `profiles:write` (parity with what
+    the OTLP card's "Generate now" button creates, harmless to include)
+- Click **Create**, then **Add token**, copy the token shown once.
+
+3. The token from this page → call this `SIGIL_AUTH_TOKEN`. Starts with
+   `glc_…`. Keep it. It's also the password half of the OTel basic-auth
+   header below.
+
+### Page C: Cloud portal → stack details → OpenTelemetry card
+
+Only needed if the user wants traces and metrics (recommended, but optional).
+
+URL: `https://grafana.com/orgs/<org>/stacks/<stack-id>`. Find the
+**OpenTelemetry** card on that page.
+
+Ask the user to copy:
+
+4. **OTLP Endpoint URL** → call this `OTEL_EXPORTER_OTLP_ENDPOINT`. It looks
+   like `https://otlp-gateway-prod-<region>.grafana.net/otlp`. Copy
+   verbatim, do not construct.
+5. The numeric **Instance ID** shown on the card. This is the basic-auth
+   *username* for OTLP. It may match the AI Observability Instance ID from
+   Page A, or it may not. Copy whichever number the card shows.
+
+Do **not** click "Generate now" on this card. The Page B token already
+covers OTLP scopes, and one token is easier to rotate than two. We only
+need the Instance ID and endpoint URL from this page.
+
+## Step 4: Set the env vars
+
+These are the values Hermes needs in its process environment. **Ask the
+user how they want to set them.** Some people put env vars in a shell
+profile, others in a project `.envrc`, others pull from a secret
+manager, others prefix `KEY=value hermes …` inline. Don't edit anything
+on their behalf without confirmation.
+
+```
+# --- Generations channel (AI Observability → Conversations) ---
+SIGIL_ENDPOINT          = <API URL from Page A>
+SIGIL_PROTOCOL          = http
+SIGIL_AUTH_MODE         = basic
+SIGIL_AUTH_TENANT_ID    = <Instance ID from Page A>
+SIGIL_AUTH_TOKEN        = <glc_... token from Page B>
+
+# --- OTel channel (traces + metrics) ---
+# Same token as SIGIL_AUTH_TOKEN. Basic-auth username is the OTLP
+# Instance ID from Page C (which may or may not equal Page A's).
+OTEL_EXPORTER_OTLP_ENDPOINT = <OTLP endpoint from Page C>
+OTEL_EXPORTER_OTLP_HEADERS  = Authorization=Basic <base64 of "<otlp-instance-id>:<glc_... token>">
+```
+
+The OTel header needs the basic-auth value pre-encoded. To compute it:
+
+```bash
+printf '%s' '<otlp-instance-id>:<glc_token>' | base64 | tr -d '\n'
+```
+
+A trailing newline silently breaks the header. `tr -d '\n'` is not
+optional.
+
+Whatever mechanism the user picks, it must be in effect by the time
+`hermes` starts so the plugin inherits the values.
+
+### Optional knobs (do not set unless the user asks)
+
+| Variable | Default | When to change |
+|---|---|---|
+| `SIGIL_AGENT_NAME` | `hermes` | Multiple Hermes deployments and you want to distinguish them in the UI |
+| `OTEL_SERVICE_NAME` | `hermes` | Same reason |
+| `SIGIL_CONTENT_CAPTURE_MODE` | `full` | Set `no_tool_content` or `metadata_only` to drop tool args/results from records |
+| `SIGIL_DEBUG` | `false` | Set `true` for verbose SDK logs while debugging install |
+| `SIGIL_HERMES_SAMPLE_RATE` | `1.0` | Lower if volume is high. Range `0.0`–`1.0` |
+| `SIGIL_HERMES_MAX_CHARS` | `12000` | Truncation cap per redacted string |
+| `SIGIL_HERMES_OTEL_AUTO` | `true` | Set `false` if the host app already installs `TracerProvider` / `MeterProvider` |
+
+## Step 5: Verify
+
+Run:
+
+```bash
+SIGIL_DEBUG=true hermes
+```
+
+Tail `~/.hermes/logs/agent.log`. On a clean install you should see:
+
+```
+hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter
+hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter
+hermes-plugin-sigil: Sigil client initialized (generations=configured, otel=configured)
+```
+
+If a channel is unconfigured the corresponding line says `not_configured`
+instead of `configured`. That is fine if the user opted out of that channel.
+
+Have the user ask Hermes any question, then open **Grafana Cloud →
+Observability → AI Observability → Conversations**. The generation should
+appear within a few seconds. Check **Traces** (filter for
+`service.name = hermes`) for the OTel side.
+
+## Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Plugin lines never appear in `agent.log` | Installed into wrong Python env | Run `which hermes`, install into that env |
+| Plugin loads but `generations=not_configured` | `SIGIL_AUTH_TOKEN` empty or `SIGIL_AUTH_MODE=none` | Re-export and reload shell |
+| `401 Unauthorized` on generations | Access policy missing `sigil:write`, or wrong realm | Edit the Page B policy to include `sigil:write` and confirm the realm matches the stack |
+| `401` on OTLP traces/metrics | Access policy missing OTel write scopes, or wrong basic-auth username | Edit the Page B policy to include `metrics:write` / `traces:write` / `logs:write`. Confirm the basic-auth username is the OTLP Instance ID from Page C, not the Sigil one from Page A |
+| `404` on generations | `SIGIL_ENDPOINT` was hand-constructed with wrong region | Copy verbatim from AI Observability → Configuration |
+| Traces/metrics silently absent | Host app installed its own provider, or `SIGIL_HERMES_OTEL_AUTO=false` | Either let the plugin install providers, or have the host app add OTLP exporters |
+
+## Hard invariants for the agent
+
+- **Never invent endpoints from a region string.** Both the Sigil endpoint
+  and the OTLP endpoint must come from the user's Grafana Cloud UI, not
+  from your own pattern-matching. Regions are not always literal (`prod-us`,
+  `prod-eu`, `prod-ap-southeast-1`, etc.) and the URLs sometimes include
+  extra segments.
+- **One token covers both channels.** A single Page B access policy
+  token, with `sigil:write` plus the OTLP write scopes, works for
+  `SIGIL_AUTH_TOKEN` *and* as the password half of the OTel basic-auth
+  header. Do not direct the user to "Generate now" on the OpenTelemetry
+  card. They end up with two tokens to rotate for no benefit.
+- **Never overwrite existing env vars without confirming.** If the user
+  already has `OTEL_EXPORTER_OTLP_ENDPOINT` set for another collector,
+  ask before changing it. The plugin will respect whatever provider the
+  host installs if `SIGIL_HERMES_OTEL_AUTO=false`.
+- **Stop and ask if any of the five values is missing.** Do not proceed
+  with placeholder values. The plugin will fail open silently and the user
+  will not know why no data shows up.
