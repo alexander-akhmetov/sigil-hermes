@@ -1,4 +1,4 @@
-# hermes-plugin-sigil
+# sigil-hermes
 
 [Grafana AI Observability](https://grafana.com/docs/grafana-cloud/machine-learning/ai-observability/) plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Records LLM calls and tool executions as Sigil generations and emits OTel traces + metrics.
 
