@@ -107,7 +107,7 @@ If they have not already: in their Grafana Cloud stack go to
 
 ### Page A: AI Observability → Configuration
 
-URL pattern: `https://<stack>.grafana.net/a/grafana-aiobservability-app/configuration`
+URL pattern: `https://<stack>.grafana.net/plugins/grafana-sigil-app`
 
 Ask the user to copy:
 
