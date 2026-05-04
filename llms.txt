@@ -224,7 +224,7 @@ hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter
 hermes-plugin-sigil: Sigil client initialized (generations=configured, otel=configured)
 ```
 
-If a channel is unconfigured the corresponding line says `not_configured`
+If a channel is unconfigured the corresponding line says `unconfigured`
 instead of `configured`. That is fine if the user opted out of that channel.
 
 Have the user ask Hermes any question, then open **Grafana Cloud →

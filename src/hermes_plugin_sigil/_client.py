@@ -94,7 +94,7 @@ def _get_client(create_if_missing: bool = True) -> Any:
             override = _to_sigil_client_config(cfg)
             _CLIENT = Client() if override is None else Client(override)
             _CONFIG = cfg
-            logger.debug(
+            logger.info(
                 "hermes-plugin-sigil: Sigil client initialized "
                 "(generations=%s, otel=%s)",
                 "configured" if cfg.generations_configured else "unconfigured",

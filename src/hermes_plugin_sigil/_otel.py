@@ -131,12 +131,12 @@ def setup_if_needed(plugin_cfg: _config.SigilPluginConfig) -> bool:
             provider = _install_tracer_provider()
             trace.set_tracer_provider(provider)
             _INSTALLED_TRACER_PROVIDER = provider
-            logger.debug("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter")
+            logger.info("hermes-plugin-sigil: installed TracerProvider with OTLP HTTP exporter")
         if needs_meter:
             provider = _install_meter_provider()
             metrics.set_meter_provider(provider)
             _INSTALLED_METER_PROVIDER = provider
-            logger.debug("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter")
+            logger.info("hermes-plugin-sigil: installed MeterProvider with OTLP HTTP exporter")
     except Exception as exc:
         logger.warning("hermes-plugin-sigil: failed to set up OTel providers: %s", exc)
         _SETUP_DONE = True
