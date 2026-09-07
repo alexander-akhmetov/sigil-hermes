@@ -32,7 +32,7 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=6.0",
   "ruff>=0.16.3",
-  "ty==0.0.73",
+  "ty==0.0.78",
 ]
 
 [project.entry-points."hermes_agent.plugins"]
